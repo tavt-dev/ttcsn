@@ -19,6 +19,7 @@
         <option value="$PROJECT_DIR$/social-service/pom.xml" />
         <option value="$PROJECT_DIR$/interaction-service/pom.xml" />
         <option value="$PROJECT_DIR$/group-service/pom.xml" />
+        <option value="$PROJECT_DIR$/monolith/pom.xml" />
       </list>
     </option>
     <option name="ignoredFiles">

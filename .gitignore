@@ -1,0 +1,15 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+monolith/.env
+monolith/.env.*
+!monolith/.env.example
+
+# Java/Maven build output
+target/
+*/target/
+
+# IDE/local files
+.idea/
+*.iml
