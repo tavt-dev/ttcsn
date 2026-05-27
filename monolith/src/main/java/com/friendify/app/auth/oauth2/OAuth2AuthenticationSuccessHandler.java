@@ -1,6 +1,7 @@
 package com.friendify.app.auth.oauth2;
 
 import java.io.IOException;
+import java.time.Duration;
 
 import com.friendify.app.auth.entity.User;
 import com.friendify.app.auth.enums.SignInProvider;
@@ -14,6 +15,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.experimental.FieldDefaults;
 import lombok.experimental.NonFinal;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseCookie;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.security.web.authentication.SimpleUrlAuthenticationSuccessHandler;
@@ -32,6 +35,26 @@ public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationS
     @NonFinal
     @Value("${app.oauth2.authorized-redirect-uri}")
     String redirectUri;
+
+    @NonFinal
+    @Value("${app.oauth2.cookie-name:FRIENDIFY_ACCESS_TOKEN}")
+    String cookieName;
+
+    @NonFinal
+    @Value("${app.oauth2.cookie-secure:false}")
+    boolean cookieSecure;
+
+    @NonFinal
+    @Value("${app.oauth2.cookie-same-site:Lax}")
+    String cookieSameSite;
+
+    @NonFinal
+    @Value("${app.oauth2.cookie-path:/}")
+    String cookiePath;
+
+    @NonFinal
+    @Value("${jwt.valid-duration}")
+    long cookieMaxAgeSeconds;
 
     @Override
     public void onAuthenticationSuccess(
@@ -55,10 +78,15 @@ public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationS
         User userWithRoles = userRepository.findByIdWithRolesAndPermissions(user.getId()).orElse(user);
         String token = jwtService.generateToken(userWithRoles);
 
-        String targetUrl = UriComponentsBuilder.fromUriString(redirectUri)
-                .queryParam("token", token)
-                .build()
-                .toUriString();
-        getRedirectStrategy().sendRedirect(request, response, targetUrl);
+        ResponseCookie accessTokenCookie = ResponseCookie.from(cookieName, token)
+                .httpOnly(true)
+                .secure(cookieSecure)
+                .sameSite(cookieSameSite)
+                .path(cookiePath)
+                .maxAge(Duration.ofSeconds(cookieMaxAgeSeconds))
+                .build();
+        response.addHeader(HttpHeaders.SET_COOKIE, accessTokenCookie.toString());
+
+        getRedirectStrategy().sendRedirect(request, response, redirectUri);
     }
 }

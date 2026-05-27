@@ -1,5 +1,7 @@
 package com.friendify.app.auth.oauth2;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -15,6 +17,8 @@ import com.friendify.app.auth.service.JwtService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.core.user.DefaultOAuth2User;
@@ -24,7 +28,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 class OAuth2AuthenticationSuccessHandlerTests {
 
     @Test
-    void successHandlerCreatesOrLoadsUserAndRedirectsWithJwtToken() throws Exception {
+    void successHandlerCreatesOrLoadsUserSetsHttpOnlyCookieAndRedirectsWithoutJwtQuery() throws Exception {
         JwtService jwtService = mock(JwtService.class);
         UserRepository userRepository = mock(UserRepository.class);
         OAuth2Service oAuth2Service = mock(OAuth2Service.class);
@@ -32,7 +36,12 @@ class OAuth2AuthenticationSuccessHandlerTests {
                 new OAuth2AuthenticationSuccessHandler(jwtService, userRepository, oAuth2Service);
         RedirectStrategy redirectStrategy = mock(RedirectStrategy.class);
         handler.setRedirectStrategy(redirectStrategy);
-        ReflectionTestUtils.setField(handler, "redirectUri", "http://localhost:5173/oauth2/redirect");
+        ReflectionTestUtils.setField(handler, "redirectUri", "http://localhost:5173/oauth2/success");
+        ReflectionTestUtils.setField(handler, "cookieName", "FRIENDIFY_ACCESS_TOKEN");
+        ReflectionTestUtils.setField(handler, "cookieSecure", false);
+        ReflectionTestUtils.setField(handler, "cookieSameSite", "Lax");
+        ReflectionTestUtils.setField(handler, "cookiePath", "/");
+        ReflectionTestUtils.setField(handler, "cookieMaxAgeSeconds", 3600L);
 
         User user = User.builder()
                 .id("user-1")
@@ -58,9 +67,19 @@ class OAuth2AuthenticationSuccessHandlerTests {
 
         handler.onAuthenticationSuccess(request, response, authentication);
 
+        ArgumentCaptor<String> cookieCaptor = ArgumentCaptor.forClass(String.class);
+        verify(response).addHeader(eq(HttpHeaders.SET_COOKIE), cookieCaptor.capture());
+        String cookie = cookieCaptor.getValue();
+        assertThat(cookie).contains("FRIENDIFY_ACCESS_TOKEN=jwt-token");
+        assertThat(cookie).contains("Path=/");
+        assertThat(cookie).contains("Max-Age=3600");
+        assertThat(cookie).contains("HttpOnly");
+        assertThat(cookie).contains("SameSite=Lax");
+        assertThat(cookie).doesNotContain("Secure");
+
         verify(redirectStrategy).sendRedirect(
                 request,
                 response,
-                "http://localhost:5173/oauth2/redirect?token=jwt-token");
+                "http://localhost:5173/oauth2/success");
     }
 }

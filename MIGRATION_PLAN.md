@@ -759,6 +759,19 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
        `spring.security.oauth2.client.registration.google.client-name`,
        Google provider authorization/token/user-info/user-name properties, and
        `app.oauth2.authorized-redirect-uri`.
+       Later review updated the success redirect default from
+       `http://localhost:5173/oauth2/redirect` to
+       `http://localhost:5173/oauth2/success`.
+     - OAuth2 success now sets the generated JWT in an HttpOnly cookie instead of
+       appending it to the frontend redirect URL. Added cookie configuration:
+       `app.oauth2.cookie-name`, `app.oauth2.cookie-secure`,
+       `app.oauth2.cookie-same-site`, and `app.oauth2.cookie-path`, backed by
+       `FRIENDIFY_OAUTH2_COOKIE_*` environment variables. For production HTTPS,
+       set `FRIENDIFY_OAUTH2_COOKIE_SECURE=true`.
+     - Updated `SecurityConfig` with a custom `BearerTokenResolver` so authenticated
+       requests can still use the normal `Authorization: Bearer ...` header, and can
+       also authenticate from the OAuth2 HttpOnly access-token cookie when no bearer
+       header is present.
        Test properties provide non-secret placeholder values.
      - Added `spring-boot-starter-oauth2-client` to `monolith/pom.xml`.
        Kafka, Redis, Feign, gateway, and config-server dependencies were not added.
@@ -766,14 +779,18 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
        `monolith/src/test/java/com/friendify/app/auth/oauth2/OAuth2ServiceTests.java`
        verifies OAuth2 new-user creation uses `ProfileCreationPort`;
        `monolith/src/test/java/com/friendify/app/auth/oauth2/OAuth2AuthenticationSuccessHandlerTests.java`
-       verifies OAuth2 success creates/loads user, generates JWT, and redirects with
-       the token.
+       verifies OAuth2 success creates/loads user, generates JWT, sets an HttpOnly
+       access-token cookie, and redirects without a JWT query parameter.
+       `monolith/src/test/java/com/friendify/app/auth/configuration/SecurityConfigTests.java`
+       verifies bearer-token resolution prefers the header and falls back to the
+       OAuth2 cookie.
      - Needs manual review: production Google `GOOGLE_CLIENT_ID`,
        `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, and
        `FRIENDIFY_OAUTH2_AUTHORIZED_REDIRECT_URI` must be configured with real values.
        Defaults are placeholders only and are not valid production credentials.
-     - Verification: `cd monolith && mvn test` passed with `BUILD SUCCESS`;
-       `Tests run: 10, Failures: 0, Errors: 0, Skipped: 0`.
+     - Verification after cookie-based OAuth2 redirect update:
+       `cd monolith && mvn test` passed with `BUILD SUCCESS`;
+       `Tests run: 16, Failures: 0, Errors: 0, Skipped: 0`.
    - 3e. [x] DONE: Do not stub away real OTP/verification email behavior. Either add a temporary `NotificationDeliveryPort` adapter that still reaches the existing notification path, or migrate the minimal Brevo email sender into `notification` before enabling monolith auth flows.
      Completed details:
      - Inspected current `notification-service` email implementation:
@@ -826,6 +843,10 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
        `com.tien.*` imports were found in `monolith/src/main/java` or tests.
      - Verified no Kafka, Redis, Feign, WebClient, RestTemplate, or internal profile
        HTTP calls were added for Phase 3 monolith communication.
+     - Verified OAuth2 success no longer exposes JWT in a query string; it now sets
+       `FRIENDIFY_ACCESS_TOKEN` as an HttpOnly cookie and redirects to the configured
+       frontend success URL. `SecurityConfig` can resolve the token from that cookie
+       on follow-up API requests.
      - Added default auth role seed config:
        `monolith/src/main/java/com/friendify/app/auth/configuration/ApplicationInitConfig.java`.
        It ensures `USER` and `ADMIN` roles exist so registration/OAuth2-created users
@@ -848,7 +869,7 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
      - Needs manual review: production should decide whether to enable admin seeding
        or create the first admin through a controlled DB/admin procedure.
      - Verification: `cd monolith && mvn test` passed with `BUILD SUCCESS`;
-       `Tests run: 14, Failures: 0, Errors: 0, Skipped: 0`.
+       `Tests run: 16, Failures: 0, Errors: 0, Skipped: 0`.
 
 4. [ ] Migrate `file` and remove image-upload Kafka request/reply.
    - Move Cloudinary config, `Image`, `ImageVersions`, `ImageRepository`, `ImageService`, `CloudMediaController`.
@@ -916,6 +937,7 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
 - Notification reliability: Kafka currently decouples identity from Brevo email. Direct calls may make registration/password reset depend on Brevo availability unless async/outbox is used.
 - Auth email sequencing risk: registration verification, resend verification, forgot password, and reset password depend on email delivery. The auth slice is not safe to release with a no-op notification stub.
 - OAuth2 redirect: `identity-service` uses `app.oauth2.authorizedRedirectUri` and Google OAuth config. Verify callback paths after monolith route changes.
+- OAuth2 cookie security: OAuth2 success now uses an HttpOnly access-token cookie instead of a query token. Production must run HTTPS with `FRIENDIFY_OAUTH2_COOKIE_SECURE=true`, verify CORS credentials behavior with the frontend, and review CSRF protection before relying on cookie-authenticated state-changing APIs.
 - Duplicate DTOs: `ProfileResponse`, `UserProfileResponse`, `ApiResponse`, `PageResponse`, and exception classes are duplicated with possibly different fields. Compare fields before unifying.
 - Mongo collection names: collections use singular names such as `post`, `group`, `file`, `conversation`; preserve them during first migration.
 - Tests are thin: current tests are mostly `contextLoads` classes. Add focused tests before deleting or disabling old services.
