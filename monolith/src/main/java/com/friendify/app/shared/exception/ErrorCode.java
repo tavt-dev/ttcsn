@@ -27,6 +27,7 @@ public enum ErrorCode {
     OTP_TOO_FREQUENT(1404, "Please wait before requesting another OTP", HttpStatus.TOO_MANY_REQUESTS),
     NOTIFICATION_DELIVERY_NOT_CONFIGURED(1501, "Notification delivery is not configured", HttpStatus.SERVICE_UNAVAILABLE),
     NOTIFICATION_DELIVERY_FAILED(1502, "Notification delivery failed", HttpStatus.BAD_GATEWAY),
+    NOTIFICATION_NOT_FOUND(1503, "Notification was not found", HttpStatus.NOT_FOUND),
     FILE_NOT_FOUND(1601, "File does not exist", HttpStatus.NOT_FOUND),
     FILE_EMPTY(1602, "File is empty", HttpStatus.BAD_REQUEST),
     POST_ID_REQUIRED(1603, "Post id is required", HttpStatus.BAD_REQUEST),

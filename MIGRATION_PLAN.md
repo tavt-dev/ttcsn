@@ -1327,11 +1327,81 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
      Post deletion now stays inside MySQL/JPA for post records and calls the
      MySQL-backed interaction cleanup port first.
 
-9. [ ] Migrate `notification`.
+9. [x] DONE: Migrate `notification`.
    - Move notification persistence to MySQL/JPA, then migrate repository/service/controllers and Brevo client.
    - Replace `notification-delivery` Kafka listener with direct application service.
    - Decide sync vs async email delivery.
    - Checkpoint tests: email dispatch with mocked Brevo; notification persistence/read/unread count.
+   Completed details:
+   - Added notification module packages under
+     `monolith/src/main/java/com/friendify/app/notification/`:
+     `controller`, `dto`, `entity`, `mapper`, `port`, `repository`,
+     `service`, and the existing `email` package from Step 3e.
+   - Migrated notification persistence to MySQL/JPA per the current
+     MySQL-only target:
+     `Notification` is mapped as a JPA entity to table `notifications`.
+     The legacy notification-service Mongo collection `notifications` now
+     needs a production data migration into this table if old data matters.
+   - Migrated repository:
+     `NotificationRepository` extends `JpaRepository` and preserves
+     `findByUserIdOrderByCreatedAtDesc`, `countByUserIdAndIsReadFalse`, and
+     `findByIdAndUserId`.
+   - Migrated DTO/mapper:
+     `NotificationResponse` and `NotificationMapper`.
+     Existing Step 3e email DTOs remain under
+     `com.friendify.app.notification.email.dto`.
+   - Migrated notification service behavior:
+     `NotificationService.getMyNotifications`,
+     `markAsRead`, `markAllAsRead`, `getUnreadCount`,
+     `createNotification`, `createNotificationFromEvent`, and
+     `deliver(NotificationEvent)`.
+   - Added `NotificationCreatePort` with:
+     `createNotification(...)` and `createNotificationFromEvent(...)`.
+     `NotificationService` implements this port for direct in-process
+     notification creation by future modules.
+   - Replaced legacy `notification-delivery` Kafka listener behavior with the
+     direct application service method `NotificationService.deliver(...)`.
+     It sends email through `EmailDeliveryService` and creates a persisted
+     notification when the event contains `param.userId`.
+   - Consolidated email delivery from Step 3e:
+     `AuthEmailNotificationAdapter` remains the single
+     `com.friendify.app.auth.port.NotificationDeliveryPort` implementation.
+     It delegates to `EmailDeliveryService`, which calls Brevo through
+     `RestClientBrevoEmailClient`.
+   - Auth email flows continue to use `NotificationDeliveryPort` directly:
+     registration verification, resend verification, forgot password, and
+     related auth emails are not no-op and do not use Kafka.
+   - Preserved public notification paths directly in the monolith:
+     `GET /api/v1/notification/notifications`,
+     `PUT /api/v1/notification/notifications/{id}/read`,
+     `PUT /api/v1/notification/notifications/read-all`,
+     `GET /api/v1/notification/notifications/unread-count`, and
+     `POST /api/v1/notification/email/send`.
+   - Security decision: `/api/v1/notification/email/send` is present but is
+     protected by the monolith's default authenticated security rule. The old
+     gateway public allowlist is not copied automatically because public email
+     sending is risky. Needs manual review if clients require it to be public.
+   - Kafka was avoided in the monolith path:
+     the old Kafka `NotificationController`, `@KafkaListener`,
+     `KafkaTemplate`, topic `notification-delivery`, and `spring-kafka` were
+     not migrated.
+   - Email sending remains synchronous. No `@Async`, Kafka, or outbox was
+     added. Needs manual review later if email reliability or request latency
+     requirements require a local outbox.
+   - No dependency changes were required. Existing JPA/MySQL, validation, web,
+     security, Lombok, MapStruct, and RestClient support are reused. No Kafka,
+     Redis, Feign, MongoDB, gateway, or config-server dependency was added.
+   - Added notification error code:
+     `NOTIFICATION_NOT_FOUND`.
+   - Added tests:
+     `NotificationDeliveryPortBeanTests` verifies there is exactly one real
+     `NotificationDeliveryPort` implementation and it is
+     `AuthEmailNotificationAdapter`;
+     `NotificationServiceTests` verifies `NotificationService` implements
+     `NotificationCreatePort`, list/read/create behavior, and
+     `deliver(NotificationEvent)` sends email and creates a notification.
+   - Verification: `cd monolith && mvn test` passed with `BUILD SUCCESS`;
+     `Tests run: 41, Failures: 0, Errors: 0, Skipped: 0`.
 
 10. [ ] Migrate `chat`.
    - Move chat persistence to MySQL/JPA, then migrate repositories/services/controllers and WebSocket config.
@@ -1366,15 +1436,18 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
   production.
 - Kafka external dependencies: no consumers/producers were found for several topics in this repo, but external consumers may exist. Needs manual review before deleting Kafka topics or deployments.
 - File upload failure timing: Kafka request/reply currently waits up to 30 seconds. Direct Cloudinary calls fail immediately in the request path; preserve error mapping.
-- Notification reliability: Kafka currently decouples identity from Brevo email. Direct calls may make registration/password reset depend on Brevo availability unless async/outbox is used.
+- Notification reliability: Step 9 replaces Kafka notification delivery with
+  synchronous direct service calls to Brevo. Registration/password reset can now
+  depend on Brevo availability unless a later local outbox or async delivery
+  mechanism is added.
 - Auth email sequencing risk: registration verification, resend verification, forgot password, and reset password depend on email delivery. The auth slice is not safe to release with a no-op notification stub.
 - OAuth2 redirect: `identity-service` uses `app.oauth2.authorizedRedirectUri` and Google OAuth config. Verify callback paths after monolith route changes.
 - OAuth2 cookie security: OAuth2 success now uses an HttpOnly access-token cookie instead of a query token. Production must run HTTPS with `FRIENDIFY_OAUTH2_COOKIE_SECURE=true`, verify CORS credentials behavior with the frontend, and review CSRF protection before relying on cookie-authenticated state-changing APIs.
 - Duplicate DTOs: `ProfileResponse`, `UserProfileResponse`, `ApiResponse`, `PageResponse`, and exception classes are duplicated with possibly different fields. Compare fields before unifying.
 - Mongo collection names: the current target is MySQL for migrated modules.
   Legacy Mongo collections already remapped to MySQL/JPA in the monolith include
-  `file`, `group`, `group_member`, `join_request`, `post`, `saved_posts`, and
-  `shared_posts`. Future notification and chat migrations should also use
+  `file`, `group`, `group_member`, `join_request`, `post`, `saved_posts`,
+  `shared_posts`, and `notifications`. Future chat migration should also use
   MySQL/JPA under the current target. Each legacy collection needs a data
   migration plan if existing data must be preserved.
 - Tests are thin: current tests are mostly `contextLoads` classes. Add focused tests before deleting or disabling old services.
