@@ -700,31 +700,30 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
        profile HTTP call was added.
      - Added auth notification port:
        `monolith/src/main/java/com/friendify/app/auth/port/NotificationDeliveryPort.java`.
-     - Added temporary notification bridge:
-       `monolith/src/main/java/com/friendify/app/auth/adapter/ExistingNotificationServiceEmailAdapter.java`.
-       It calls the existing notification-service `POST /email/send` endpoint only when
-       `friendify.auth.notification-service-url` is configured. If not configured, email
-       flows fail with `NOTIFICATION_DELIVERY_NOT_CONFIGURED`; they do not log-and-succeed
-       or silently no-op.
+     - Historical Step 3c note: this slice originally used a temporary
+       external notification bridge so auth email flows would not silently
+       succeed. That temporary bridge was removed in Step 3e/Step 9 and is not
+       present in the final monolith path. Auth email now uses the notification
+       module's `AuthEmailNotificationAdapter` and Brevo email service.
      - Added non-OAuth2 security/JWT classes:
        `SecurityConfig`, `CustomJwtDecoder`, and `JwtAuthenticationEntryPoint`.
        OAuth2 login handlers remain deferred to Step 3d.
      - Added small HTTP client config:
        `monolith/src/main/java/com/friendify/app/config/HttpClientConfig.java`
-       for `RestClient.Builder` used by the temporary external notification bridge.
+       for `RestClient.Builder`, now used only for the external Brevo email
+       integration.
      - Updated `monolith/pom.xml` with `spring-boot-starter-security` and
        `spring-boot-starter-oauth2-resource-server`. `nimbus-jose-jwt` is supplied
        transitively by the resource-server stack.
-     - Updated `monolith/src/main/resources/application.properties` with JWT settings,
-       one monolith datasource placeholder, and
-       `friendify.auth.notification-service-url`. Test properties use H2 and test JWT
-       settings.
+     - Updated `monolith/src/main/resources/application.properties` with JWT
+       settings and one monolith datasource placeholder. Test properties use H2
+       and test JWT settings.
      - Added tests:
        `monolith/src/test/java/com/friendify/app/auth/service/AuthenticationServiceTests.java`
        verifies registration uses `ProfileCreationPort` and sends verification email via
-       `NotificationDeliveryPort`;
-       `monolith/src/test/java/com/friendify/app/auth/adapter/ExistingNotificationServiceEmailAdapterTests.java`
-       verifies missing notification URL fails clearly instead of silently succeeding.
+       `NotificationDeliveryPort`.
+       The old temporary notification bridge tests were removed after the real
+       notification email adapter was introduced.
      - Needs manual review: Step 3c uses one monolith datasource placeholder
        `FRIENDIFY_DATASOURCE_URL` with default `friendify_monolith`. Existing service data
        currently lives in separate `identity_service` and `profile_service` schemas; a real
@@ -802,7 +801,7 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
      - Verification after cookie-based OAuth2 redirect update:
        `cd monolith && mvn test` passed with `BUILD SUCCESS`;
        `Tests run: 16, Failures: 0, Errors: 0, Skipped: 0`.
-   - 3e. [x] DONE: Do not stub away real OTP/verification email behavior. Either add a temporary `NotificationDeliveryPort` adapter that still reaches the existing notification path, or migrate the minimal Brevo email sender into `notification` before enabling monolith auth flows.
+   - 3e. [x] DONE: Finalize real auth email delivery through the monolith Brevo email adapter.
      Completed details:
      - Inspected current `notification-service` email implementation:
        `EmailService`, `EmailClient`, `EmailController`, `SendEmailRequest`,
@@ -1831,7 +1830,10 @@ against a real environment:
   synchronous direct service calls to Brevo. Registration/password reset can now
   depend on Brevo availability unless a later local outbox or async delivery
   mechanism is added.
-- Auth email sequencing risk: registration verification, resend verification, forgot password, and reset password depend on email delivery. The auth slice is not safe to release with a no-op notification stub.
+- Auth email sequencing risk: registration verification, resend verification,
+  forgot password, and reset password depend on real Brevo email delivery. The
+  monolith no longer uses a no-op notification stub, but production must set
+  `BREVO_API_KEY` and `BREVO_SENDER_EMAIL` and smoke test these flows.
 - OAuth2 redirect: `identity-service` uses `app.oauth2.authorizedRedirectUri` and Google OAuth config. Verify callback paths after monolith route changes.
 - OAuth2 cookie security: OAuth2 success now uses an HttpOnly access-token cookie instead of a query token. Production must run HTTPS with `FRIENDIFY_OAUTH2_COOKIE_SECURE=true`, verify CORS credentials behavior with the frontend, and review CSRF protection before relying on cookie-authenticated state-changing APIs.
 - Duplicate DTOs: `ProfileResponse`, `UserProfileResponse`, `ApiResponse`, `PageResponse`, and exception classes are duplicated with possibly different fields. Compare fields before unifying.
