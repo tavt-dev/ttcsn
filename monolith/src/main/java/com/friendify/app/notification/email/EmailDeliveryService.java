@@ -24,7 +24,7 @@ public class EmailDeliveryService {
             BrevoEmailClient brevoEmailClient,
             @Value("${notification.email.brevo-apikey:}") String apiKey,
             @Value("${notification.email.sender-name:Friendify}") String senderName,
-            @Value("${notification.email.sender-email:tavantien786@gmail.com}") String senderEmail) {
+            @Value("${notification.email.sender-email:}") String senderEmail) {
         this.brevoEmailClient = brevoEmailClient;
         this.apiKey = apiKey;
         this.senderName = senderName;
@@ -34,6 +34,9 @@ public class EmailDeliveryService {
     public EmailResponse sendEmail(SendEmailRequest request) {
         validateRequest(request);
         if (!StringUtils.hasText(apiKey)) {
+            throw new AppException(ErrorCode.NOTIFICATION_DELIVERY_NOT_CONFIGURED);
+        }
+        if (!StringUtils.hasText(senderEmail)) {
             throw new AppException(ErrorCode.NOTIFICATION_DELIVERY_NOT_CONFIGURED);
         }
 

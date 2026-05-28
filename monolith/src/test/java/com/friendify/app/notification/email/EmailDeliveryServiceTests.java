@@ -32,6 +32,19 @@ class EmailDeliveryServiceTests {
     }
 
     @Test
+    void sendEmailFailsClearlyWhenSenderEmailIsMissing() {
+        BrevoEmailClient brevoEmailClient = mock(BrevoEmailClient.class);
+        EmailDeliveryService emailDeliveryService =
+                new EmailDeliveryService(brevoEmailClient, "api-key", "Friendify", "");
+
+        assertThatThrownBy(() -> emailDeliveryService.sendEmail(validRequest()))
+                .isInstanceOf(AppException.class)
+                .extracting(exception -> ((AppException) exception).getErrorCode())
+                .isEqualTo(ErrorCode.NOTIFICATION_DELIVERY_NOT_CONFIGURED);
+        verify(brevoEmailClient, never()).sendEmail(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
     void sendEmailBuildsBrevoRequestAndCallsClient() {
         BrevoEmailClient brevoEmailClient = mock(BrevoEmailClient.class);
         EmailDeliveryService emailDeliveryService =

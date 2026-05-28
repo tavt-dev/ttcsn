@@ -22,7 +22,10 @@ No source code should be moved until each migration slice below is reviewed and 
 | `shared-contacts` | `com.tien.sharedcontacts` | none | `shared-contacts/pom.xml` | none found |
 | `monolith` | `com.friendify.app` | `monolith/src/main/java/com/friendify/app/MonolithApplication.java` | `monolith/pom.xml` | `monolith/src/main/resources/application.properties` |
 
-Version inventory: every current `pom.xml` inspected uses Spring Boot `3.5.5` and `java.version` `17`. `spring-cloud.version` is `2025.0.0` in services that use Spring Cloud. `AGENTS.md` currently says Java 21 and Spring Boot 4.0.6; this conflicts with the checked build files and needs manual review before changing `monolith/pom.xml`.
+Version inventory: legacy service `pom.xml` files use Spring Boot `3.5.5` and
+`java.version` `17`. The monolith was explicitly upgraded during migration to
+Java `21` and Spring Boot `4.0.6` to match the current `AGENTS.md` policy and
+the local Java runtime.
 
 ## 2. Service Responsibilities
 
@@ -348,7 +351,9 @@ WebSocket/STOMP endpoints in `WebSocketController`:
 - `@MessageMapping("/chat.addUser")` with `ChatNotification`, publishes to `/topic/conversation/{conversationId}`.
 - `@MessageMapping("/chat.removeUser")` with `ChatNotification`, publishes to `/topic/conversation/{conversationId}`.
 
-Needs manual review: `WebSocketConfig` allows all origins with `setAllowedOriginPatterns("*")`; decide whether to keep that behavior or restrict it before production.
+Phase 12 update: monolith WebSocket origins are no longer hard-coded as `*`.
+They are controlled by `FRIENDIFY_WEBSOCKET_ALLOWED_ORIGIN_PATTERNS`. Production
+still needs manual review to set exact frontend origins.
 
 ## 4. Database Entities, Tables, Collections
 
@@ -386,10 +391,9 @@ Needs manual review: `WebSocketConfig` allows all origins with `setAllowedOrigin
 
 Needs manual review: the original legacy services use MongoDB for post, group,
 file, notification, and chat. The current monolith target has been clarified as
-MySQL-only for migrated modules. Step 4, Step 6, and Step 8 now map file,
-group, and post data to MySQL/JPA. Future notification and chat steps should
-also map their legacy Mongo data to MySQL/JPA unless the user explicitly changes
-that target.
+MySQL-only for migrated modules. Steps 4, 6, 8, 9, and 10 map file, group,
+post, notification, and chat data to MySQL/JPA. Production needs data migration
+scripts if existing MongoDB data must be preserved.
 
 ## 5. Inter-Service Communication And Integrations
 
@@ -547,7 +551,9 @@ Dependencies to remove:
 Each step should end with `cd monolith && mvn test` or `mvn verify` once the monolith has the required dependencies.
 
 1. [x] Stabilize monolith shell. DONE
-   - Review version conflict: current repo uses Java 17/Spring Boot 3.5.5, `AGENTS.md` says Java 21/Spring Boot 4.0.6. Choose explicitly before editing `monolith/pom.xml`.
+   - Version policy resolved for the monolith: use Java 21 and Spring Boot
+     4.0.6 per current `AGENTS.md` and the local runtime. Legacy services stay
+     unchanged for rollback.
    - Add required Spring starters only for the first slice.
    - Preserve root package `com.friendify.app`.
    - Checkpoint: `MonolithApplicationTests.contextLoads`.
@@ -1461,9 +1467,9 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
        `/topic/conversation/{conversationId}`
      - `@MessageMapping("/chat.removeUser")` publishes to
        `/topic/conversation/{conversationId}`
-   - Preserved legacy WebSocket origin behavior with
-     `setAllowedOriginPatterns("*")` for compatibility. Needs manual review
-     before production hardening.
+   - Phase 12 update: WebSocket allowed origins are now environment-driven
+     through `FRIENDIFY_WEBSOCKET_ALLOWED_ORIGIN_PATTERNS`; production should
+     use exact frontend origins.
    - Updated `SecurityConfig` to permit only the WebSocket handshake paths
      while keeping STOMP token validation in `WebSocketAuthInterceptor`.
    - Added chat error codes to `shared/exception/ErrorCode.java`.
@@ -1483,10 +1489,325 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
    - Only after monolith endpoint parity is verified.
    - Keep compatibility routing inside monolith so clients still use `/api/v1/{domain}/...`.
    - Remove `api-gateway` and `config-server` from deployment, not from source, until a release rollback plan exists.
+   - Phase 12 review: not safe to mark DONE yet because the final smoke test
+     checklist still requires manual verification against real MySQL,
+     Cloudinary, Brevo, Google OAuth2, frontend routes, and WebSocket clients.
 
-## 10. Risks And Manual Review Items
+## 10. Phase 12: Post-Migration Cleanup, Hardening, And Production Readiness
 
-- Version conflict: checked build files use Java 17/Spring Boot 3.5.5, while `AGENTS.md` currently says Java 21/Spring Boot 4.0.6. Needs manual review before migration implementation.
+Status: [x] DONE for monolith cleanup/readiness checks. Gateway/config-server
+retirement remains unchecked because it requires real environment smoke tests
+and a cutover decision.
+
+### Cleanup Summary
+
+- Scanned `monolith/src/main/java`, `monolith/src/test/java`,
+  `monolith/src/main/resources`, `monolith/src/test/resources`, and
+  `monolith/pom.xml` for migration leftovers:
+  - `com.tien.*`
+  - Kafka runtime usage: `KafkaTemplate`, `@KafkaListener`,
+    `ImageUploadKafkaService`, `ImageTopics`, `spring-kafka`
+  - internal Feign/Spring Cloud leftovers:
+    `spring-cloud-starter-openfeign`, `spring-cloud-config`,
+    gateway dependencies
+  - Redis runtime/config usage
+  - Mongo runtime usage: `MongoRepository`, `@Document`,
+    `spring.data.mongodb`, `spring-boot-starter-data-mongodb`
+  - no-op/stub/temporary bridge markers
+- No obsolete Kafka, Redis, Feign, MongoDB, gateway, config-server, or
+  `com.tien.*` runtime dependency was found in the monolith.
+- No old microservice source code was deleted.
+- No `api-gateway` or `config-server` source code was deleted.
+- Added `ArchitectureCleanupTests` to keep checking that obsolete runtime
+  dependencies are not reintroduced into the monolith.
+- Added explicit port wiring coverage in `ArchitectureCleanupTests` for:
+  - `ProfileCreationPort`
+  - `ProfileQueryPort`
+  - `NotificationDeliveryPort`
+  - `FileUploadPort`
+  - `SocialGraphQueryPort`
+  - `GroupAccessPort`
+  - `InteractionQueryPort`
+  - `InteractionCleanupPort`
+  - `PostQueryPort`
+
+### Hardening Changes
+
+- Added `monolith/src/main/java/com/friendify/app/config/CorsConfig.java`.
+  CORS is now controlled by:
+  - `app.cors.allowed-origin-patterns`
+  - `FRIENDIFY_CORS_ALLOWED_ORIGIN_PATTERNS`
+- Updated `WebSocketConfig` so `/ws` allowed origins are no longer hard-coded
+  as `*`. WebSocket origins are now controlled by:
+  - `app.websocket.allowed-origin-patterns`
+  - `FRIENDIFY_WEBSOCKET_ALLOWED_ORIGIN_PATTERNS`
+- Updated `monolith/.env.example` with the CORS and WebSocket origin variables.
+- Removed the hard-coded Brevo sender email default from
+  `EmailDeliveryService` and `application.properties`.
+- `EmailDeliveryService` now fails with
+  `NOTIFICATION_DELIVERY_NOT_CONFIGURED` if the Brevo API key or sender email is
+  missing. It does not return success without a real email send attempt.
+- Added a test for missing sender email configuration.
+
+### Removed Obsolete Dependencies
+
+No dependency removal was needed in Phase 12 because the monolith `pom.xml`
+already had no Kafka, Redis, Feign, Spring Cloud Config, Gateway, or MongoDB
+runtime dependencies.
+
+Current monolith runtime dependencies intentionally retained:
+
+- Spring Web
+- Spring WebSocket
+- Spring Security
+- OAuth2 Resource Server
+- OAuth2 Client
+- Spring Data JPA
+- MySQL driver
+- Cloudinary
+- Validation
+- Lombok/MapStruct
+
+### Direct Module Port Verification
+
+| Flow | Verified direct port |
+|---|---|
+| auth -> profile | `ProfileCreationPort` |
+| auth -> notification/email | `NotificationDeliveryPort` |
+| profile -> file | `FileUploadPort` |
+| group -> profile | `ProfileQueryPort` |
+| group -> file | `FileUploadPort` |
+| post -> file | `FileUploadPort` |
+| social -> profile | `ProfileQueryPort` |
+| interaction -> profile | `ProfileQueryPort` |
+| interaction -> post | `PostQueryPort` |
+| post -> profile | `ProfileQueryPort` |
+| post -> social | `SocialGraphQueryPort` |
+| post -> interaction query | `InteractionQueryPort` |
+| post -> interaction cleanup | `InteractionCleanupPort` |
+| post -> group | `GroupAccessPort` |
+| chat -> profile | `ProfileQueryPort` |
+
+No internal Feign, WebClient, RestTemplate, Kafka, or Redis path was added for
+these module calls.
+
+### Endpoint Parity Summary
+
+Detailed endpoint lists are documented above in section 3 and in each completed
+migration step. Phase 12 parity summary:
+
+| Surface | Status | Notes |
+|---|---|---|
+| `/api/v1/identity/**` | Verified | Controllers are present under `auth`; public auth endpoints are explicitly permitted. Needs manual smoke test. |
+| `/oauth2/**` and `/login/oauth2/**` | Verified | OAuth2 framework paths are preserved. Needs manual Google OAuth2 smoke test with deployed redirect URIs. |
+| `/api/v1/identity/oauth2/**` and `/api/v1/identity/login/oauth2/**` | Verified | Compatibility controller is present. Needs manual frontend smoke test. |
+| `/api/v1/profile/**` | Verified | Profile CRUD/search/avatar/background endpoints are present. Needs manual media smoke test. |
+| `/api/v1/file/**` | Verified | Image upload endpoints are present. Needs manual Cloudinary smoke test. |
+| `/api/v1/social/**` | Verified | Friendship/follow/block endpoints are present. Needs manual workflow smoke test. |
+| `/api/v1/group/**` | Verified | Group CRUD/membership/join/media endpoints are present. Needs manual workflow smoke test. |
+| `/api/v1/interaction/**` | Verified | Like/comment/reply/count endpoints are present. Needs manual workflow smoke test. |
+| `/api/v1/post/**` | Verified | Post CRUD/feed/save/share/group/image endpoints are present. Needs manual feed and delete-cleanup smoke test. |
+| `/api/v1/notification/**` | Verified | Notification list/read/read-all/unread-count and email send endpoints are present. Needs manual Brevo smoke test. |
+| `/api/v1/chat/**` | Verified | Conversation/message/read-receipt endpoints are present. Needs manual chat smoke test. |
+| `/ws` | Verified | STOMP endpoint is present. Needs manual WebSocket auth/origin smoke test. |
+| `/api/v1/file/media/download/**` | Intentionally removed | Gateway allowlist referenced it, but no active file-service endpoint was found. Needs manual review before re-adding. |
+
+### Configuration Readiness
+
+Monolith config uses placeholders/environment variables for:
+
+- `SERVER_PORT`
+- MySQL datasource:
+  - `FRIENDIFY_DATASOURCE_URL`
+  - `FRIENDIFY_DATASOURCE_USERNAME`
+  - `FRIENDIFY_DATASOURCE_PASSWORD`
+- JPA:
+  - `FRIENDIFY_JPA_DDL_AUTO`
+  - `FRIENDIFY_JPA_SHOW_SQL`
+- JWT:
+  - `FRIENDIFY_JWT_SIGNER_KEY`
+  - `FRIENDIFY_JWT_ISSUER`
+  - `FRIENDIFY_JWT_VALID_DURATION`
+  - `FRIENDIFY_JWT_REFRESHABLE_DURATION`
+- Google OAuth2:
+  - `GOOGLE_CLIENT_ID`
+  - `GOOGLE_CLIENT_SECRET`
+  - `GOOGLE_REDIRECT_URI`
+  - `FRIENDIFY_OAUTH2_AUTHORIZED_REDIRECT_URI`
+  - `FRIENDIFY_OAUTH2_COOKIE_NAME`
+  - `FRIENDIFY_OAUTH2_COOKIE_SECURE`
+  - `FRIENDIFY_OAUTH2_COOKIE_SAME_SITE`
+  - `FRIENDIFY_OAUTH2_COOKIE_PATH`
+- Brevo:
+  - `BREVO_URL`
+  - `BREVO_API_KEY`
+  - `BREVO_SENDER_NAME`
+  - `BREVO_SENDER_EMAIL`
+- Cloudinary:
+  - `CLOUDINARY_CLOUD_NAME`
+  - `CLOUDINARY_API_KEY`
+  - `CLOUDINARY_API_SECRET`
+- CORS:
+  - `FRIENDIFY_CORS_ALLOWED_ORIGIN_PATTERNS`
+- WebSocket:
+  - `FRIENDIFY_WEBSOCKET_ALLOWED_ORIGIN_PATTERNS`
+
+MongoDB URI readiness: not applicable to the current monolith runtime because
+the user clarified during migration that the target should use MySQL only.
+No MongoDB dependency or `FRIENDIFY_MONGODB_URI` remains in the monolith. Needs
+manual review only if the target changes back to mixed MySQL/MongoDB.
+
+### Security Review Notes
+
+- Public endpoints are limited in `SecurityConfig` to:
+  - selected `POST /api/v1/identity/auth/**` endpoints
+  - OAuth2 framework and compatibility paths
+  - `/ws` handshake paths
+  - temporary `/internal/users/**` profile compatibility paths
+  - Swagger/OpenAPI paths
+- Role/permission/user endpoints are not public and fall through to
+  authenticated access.
+- `/api/v1/notification/email/send` is not public in the monolith. It requires
+  authentication through the default rule, unlike the old gateway allowlist.
+- Swagger/OpenAPI paths are currently public for development compatibility.
+  Needs manual review before production.
+- CORS and WebSocket origins are now environment-driven. Production should use
+  exact frontend origins, not `*`.
+- WebSocket HTTP handshake is permitted, but STOMP `CONNECT`, `SEND`, and
+  `SUBSCRIBE` frames are validated by `WebSocketAuthInterceptor`.
+- CSRF is disabled because the backend uses JWT bearer/cookie auth. Needs manual
+  production review if OAuth2 cookie auth is used for state-changing browser
+  requests.
+
+### Database Review Notes
+
+- The current monolith uses MySQL/JPA only.
+- JPA table names preserved or intentionally mapped from legacy names include:
+  `user`, `role`, `permission`, `invalidated_token`, `user_otp`,
+  `user_profile`, `file`, `image_versions`, `friendships`, `follows`,
+  `user_blocks`, `group`, `group_member`, `join_request`, `comments`, `likes`,
+  `post`, `saved_posts`, `shared_posts`, `notifications`, `conversation`,
+  `conversation_participants`, `chat_message`, and `read_receipt`.
+- Legacy Mongo collection names from old services were remapped to MySQL/JPA
+  tables during migration after the user clarified the target. These require
+  production data migration scripts if existing data must be preserved:
+  `post`, `saved_posts`, `shared_posts`, `group`, `group_member`,
+  `join_request`, `file`, `notifications`, `conversation`, `chat_message`,
+  and `read_receipt`.
+- No cross-database foreign keys were added.
+- Needs manual review: production should replace `spring.jpa.hibernate.ddl-auto`
+  with explicit schema migrations before cutover.
+
+### External Integration Review
+
+- Cloudinary upload goes through `FileUploadPort` and `ImageService`.
+- Brevo email goes through `NotificationDeliveryPort`,
+  `AuthEmailNotificationAdapter`, and `EmailDeliveryService`.
+- Google OAuth2 uses monolith OAuth2 callback/redirect configuration.
+- No external Kafka dependency remains in the monolith. Needs manual review
+  before deleting old Kafka topics or deployments because external consumers may
+  exist outside this repository.
+
+### Deployment Docs
+
+- Added `monolith/README.md` with:
+  - local run commands
+  - required environment variables
+  - monolith runtime dependencies
+  - services no longer needed at runtime
+  - docker-compose monolith profile guidance
+  - rollback procedure using old microservices/gateway/config-server
+- No repository-level docker-compose file existed. The README documents the
+  expected `monolith` compose profile shape. Needs manual review before adding a
+  real production Dockerfile/image build pipeline.
+
+### Final Smoke Test Checklist
+
+Run these manually before switching production traffic:
+
+- [ ] Register user.
+- [ ] Verify user by OTP.
+- [ ] Resend verification.
+- [ ] Login.
+- [ ] Refresh token.
+- [ ] Logout.
+- [ ] Forgot password.
+- [ ] Reset password.
+- [ ] OAuth2 Google login.
+- [ ] Get profile.
+- [ ] Update profile.
+- [ ] Upload avatar.
+- [ ] Upload background.
+- [ ] Upload file image.
+- [ ] Send friend request.
+- [ ] Accept friend request.
+- [ ] Reject friend request.
+- [ ] Follow user.
+- [ ] Unfollow user.
+- [ ] Block user.
+- [ ] Unblock user.
+- [ ] Create group.
+- [ ] Join group.
+- [ ] Approve join request.
+- [ ] Upload group avatar.
+- [ ] Upload group cover.
+- [ ] Create post with image.
+- [ ] Update post.
+- [ ] Save post.
+- [ ] Unsave post.
+- [ ] Share post.
+- [ ] Public feed.
+- [ ] Personal feed.
+- [ ] Group feed.
+- [ ] Like post.
+- [ ] Unlike post.
+- [ ] Comment.
+- [ ] Reply.
+- [ ] Delete post and verify interaction cleanup.
+- [ ] Notification list.
+- [ ] Mark notification read.
+- [ ] Mark all notifications read.
+- [ ] Unread notification count.
+- [ ] Create chat conversation.
+- [ ] Send chat message.
+- [ ] Read receipt.
+- [ ] WebSocket connect to `/ws`.
+- [ ] WebSocket `sendMessage`.
+- [ ] WebSocket `typing`.
+- [ ] WebSocket `addUser`.
+- [ ] WebSocket `removeUser`.
+
+### Phase 12 Verification
+
+- `cd monolith && mvn test`: `BUILD SUCCESS`;
+  `Tests run: 46, Failures: 0, Errors: 0, Skipped: 0`.
+- `cd monolith && mvn verify`: `BUILD SUCCESS`;
+  `Tests run: 46, Failures: 0, Errors: 0, Skipped: 0`.
+
+### Remaining Work Gate
+
+No further safe source-code migration work was found in the monolith after the
+Phase 12 scan. The remaining items are release/cutover tasks that must be done
+against a real environment:
+
+- Execute the final manual smoke test checklist above.
+- Set production values for all secrets and origin allowlists.
+- Create reviewed MySQL schema/data migration scripts for legacy service data,
+  especially data previously stored in MongoDB.
+- Decide whether Swagger/OpenAPI should remain public.
+- Decide whether `/internal/**` compatibility endpoints are still needed by any
+  external clients.
+- Confirm no external Kafka consumers still depend on old topics before
+  deleting Kafka infrastructure.
+- Retire `api-gateway` and `config-server` from deployment only after the
+  manual smoke tests pass and rollback has been rehearsed.
+
+## 11. Risks And Manual Review Items
+
+- Version policy: legacy services remain on Java 17/Spring Boot 3.5.5, while
+  the monolith is now Java 21/Spring Boot 4.0.6 per `AGENTS.md`. Do not upgrade
+  legacy services unless they still need to run in rollback mode and an explicit
+  rollback compatibility review is done.
 - Config-server port/config risk: services import `optional:configserver:http://localhost:8888`, while `config-server/src/main/resources/application.yaml` sets `management.server.port: 8888` but no explicit `server.port`. Confirm how config-server is actually run before relying on its current runtime behavior.
 - Gateway path compatibility: current services rely on servlet context paths and gateway `StripPrefix=2`. The monolith must expose `/api/v1/identity`, `/api/v1/profile`, `/api/v1/post`, etc. directly or via controller base mappings.
 - Gateway public allowlist risk: `AuthenticationFilter` permits `/api/v1/file/media/download/.*`, but only commented-out file download code was found in `CloudMediaController`. Needs manual review before copying this allowlist.
@@ -1520,9 +1841,9 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
   `shared_posts`, `notifications`, `conversation`, `chat_message`, and
   `read_receipt`. Each legacy collection needs a data migration plan if
   existing data must be preserved.
-- Chat WebSocket origin risk: Step 10 preserves legacy
-  `setAllowedOriginPatterns("*")` for `/ws` compatibility. Needs manual review
-  before production; restrict origins to the deployed frontend domains.
+- Chat WebSocket origin risk: Phase 12 moved `/ws` allowed origins to
+  `FRIENDIFY_WEBSOCKET_ALLOWED_ORIGIN_PATTERNS`. Needs manual review before
+  production; set exact deployed frontend domains.
 - Chat WebSocket security risk: the HTTP handshake path is permitted so SockJS
   can connect, while STOMP `CONNECT`/`SEND`/`SUBSCRIBE` frames are validated in
   `WebSocketAuthInterceptor`. Verify frontend token forwarding and close
@@ -1531,4 +1852,8 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
   messages, read receipts, and participant snapshots in MongoDB documents; the
   monolith Step 10 implementation maps them to MySQL/JPA tables. Needs manual
   review and a production migration script before switching traffic.
-- Tests are thin: current tests are mostly `contextLoads` classes. Add focused tests before deleting or disabling old services.
+- Tests are improved but still not a replacement for environment smoke tests:
+  the monolith has port wiring, cleanup guard, auth, profile, file, social,
+  group, interaction, post, notification, and chat focused tests, but production
+  dependencies still need manual verification before deleting or disabling old
+  services.
