@@ -57,6 +57,13 @@ public class SecurityConfig {
         "/api/v1/identity/login/oauth2/**"
     };
 
+    static final String[] WEBSOCKET_ENDPOINTS = {
+        "/ws",
+        "/ws/**",
+        "/topic/**",
+        "/app/**"
+    };
+
     static final String[] SWAGGER_ENDPOINTS = {
         "/swagger-ui/**",
         "/swagger-ui.html",
@@ -80,6 +87,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(requests -> requests
                         .requestMatchers(HttpMethod.POST, PUBLIC_AUTH_ENDPOINTS).permitAll()
                         .requestMatchers(OAUTH2_ENDPOINTS).permitAll()
+                        .requestMatchers(WEBSOCKET_ENDPOINTS).permitAll()
                         .requestMatchers(INTERNAL_COMPATIBILITY_ENDPOINTS).permitAll()
                         .requestMatchers(SWAGGER_ENDPOINTS).permitAll()
                         .anyRequest().authenticated())

@@ -1403,11 +1403,81 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
    - Verification: `cd monolith && mvn test` passed with `BUILD SUCCESS`;
      `Tests run: 41, Failures: 0, Errors: 0, Skipped: 0`.
 
-10. [ ] Migrate `chat`.
-   - Move chat persistence to MySQL/JPA, then migrate repositories/services/controllers and WebSocket config.
-   - Replace profile Feign with profile query port.
-   - Preserve REST and STOMP paths.
-   - Checkpoint tests: WebSocket auth, conversation membership validation, unread count.
+10. [x] DONE: Migrate `chat`.
+   - Moved chat code into `monolith/src/main/java/com/friendify/app/chat`.
+   - Migrated chat persistence to MySQL/JPA, not MongoDB, using:
+     - `entity/Conversation.java` mapped to table `conversation`
+     - `entity/ParticipantInfo.java` as an embeddable participant snapshot in table `conversation_participants`
+     - `entity/ChatMessage.java` mapped to table `chat_message`
+     - `entity/ReadReceipt.java` mapped to table `read_receipt`
+   - Migrated repositories:
+     - `ConversationRepository`
+     - `ChatMessageRepository`
+     - `ReadReceiptRepository`
+   - Migrated services:
+     - `ConversationService`
+     - `ChatMessageService`
+     - `ReadReceiptService`
+   - Migrated controllers:
+     - `ConversationController`
+     - `ChatMessageController`
+     - `WebSocketController`
+   - Migrated WebSocket/STOMP configuration:
+     - `WebSocketConfig`
+     - `WebSocketAuthInterceptor`
+   - Replaced profile Feign usage with direct `ProfileQueryPort` calls in
+     `ConversationService` and `ChatMessageService`. No profile HTTP,
+     WebClient, RestTemplate, or Feign client was added.
+   - Preserved REST endpoints under `/api/v1/chat/**`:
+     - `POST /api/v1/chat/conversations`
+     - `GET /api/v1/chat/conversations/my-conversations`
+     - `GET /api/v1/chat/conversations/{id}`
+     - `PUT /api/v1/chat/conversations/{id}`
+     - `DELETE /api/v1/chat/conversations/{id}`
+     - `POST /api/v1/chat/conversations/{id}/participants`
+     - `DELETE /api/v1/chat/conversations/{id}/participants/{participantId}`
+     - `POST /api/v1/chat/conversations/{id}/leave`
+     - `POST /api/v1/chat/conversations/{id}/admins`
+     - `DELETE /api/v1/chat/conversations/{id}/admins/{participantId}`
+     - `POST /api/v1/chat/messages`
+     - `GET /api/v1/chat/messages?conversationId=...`
+     - `GET /api/v1/chat/messages/paginated`
+     - `GET /api/v1/chat/messages/{id}`
+     - `PUT /api/v1/chat/messages/{id}`
+     - `DELETE /api/v1/chat/messages/{id}`
+     - `POST /api/v1/chat/messages/{id}/read`
+     - `GET /api/v1/chat/messages/{id}/read-receipts`
+     - `GET /api/v1/chat/messages/unread-count`
+   - Preserved STOMP behavior:
+     - handshake endpoint `/ws`
+     - application destination prefix `/app`
+     - broker prefixes `/topic`, `/queue`, `/user`
+     - user destination prefix `/user`
+     - `@MessageMapping("/chat.sendMessage")` publishes to
+       `/topic/conversation/{conversationId}`
+     - `@MessageMapping("/chat.typing")` publishes to
+       `/topic/conversation/{conversationId}/typing`
+     - `@MessageMapping("/chat.addUser")` publishes to
+       `/topic/conversation/{conversationId}`
+     - `@MessageMapping("/chat.removeUser")` publishes to
+       `/topic/conversation/{conversationId}`
+   - Preserved legacy WebSocket origin behavior with
+     `setAllowedOriginPatterns("*")` for compatibility. Needs manual review
+     before production hardening.
+   - Updated `SecurityConfig` to permit only the WebSocket handshake paths
+     while keeping STOMP token validation in `WebSocketAuthInterceptor`.
+   - Added chat error codes to `shared/exception/ErrorCode.java`.
+   - Added dependency:
+     `spring-boot-starter-websocket`.
+   - No Kafka, Redis, Feign, MongoDB, gateway, or config-server dependency was
+     added.
+   - Added tests:
+     - `ConversationServiceTests` verifies profile data is loaded through
+       `ProfileQueryPort`.
+     - `ChatMessageServiceTests` verifies message sender data is loaded through
+       `ProfileQueryPort`.
+   - Verification: `cd monolith && mvn test` passed with `BUILD SUCCESS`;
+     `Tests run: 43, Failures: 0, Errors: 0, Skipped: 0`.
 
 11. [ ] Retire gateway/config-server.
    - Only after monolith endpoint parity is verified.
@@ -1447,7 +1517,18 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
 - Mongo collection names: the current target is MySQL for migrated modules.
   Legacy Mongo collections already remapped to MySQL/JPA in the monolith include
   `file`, `group`, `group_member`, `join_request`, `post`, `saved_posts`,
-  `shared_posts`, and `notifications`. Future chat migration should also use
-  MySQL/JPA under the current target. Each legacy collection needs a data
-  migration plan if existing data must be preserved.
+  `shared_posts`, `notifications`, `conversation`, `chat_message`, and
+  `read_receipt`. Each legacy collection needs a data migration plan if
+  existing data must be preserved.
+- Chat WebSocket origin risk: Step 10 preserves legacy
+  `setAllowedOriginPatterns("*")` for `/ws` compatibility. Needs manual review
+  before production; restrict origins to the deployed frontend domains.
+- Chat WebSocket security risk: the HTTP handshake path is permitted so SockJS
+  can connect, while STOMP `CONNECT`/`SEND`/`SUBSCRIBE` frames are validated in
+  `WebSocketAuthInterceptor`. Verify frontend token forwarding and close
+  behavior before production.
+- Chat data migration risk: legacy `chat-service` stored conversations,
+  messages, read receipts, and participant snapshots in MongoDB documents; the
+  monolith Step 10 implementation maps them to MySQL/JPA tables. Needs manual
+  review and a production migration script before switching traffic.
 - Tests are thin: current tests are mostly `contextLoads` classes. Add focused tests before deleting or disabling old services.

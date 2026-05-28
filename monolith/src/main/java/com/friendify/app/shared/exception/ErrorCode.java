@@ -73,7 +73,16 @@ public enum ErrorCode {
     INVALID_PARENT_COMMENT(1911, "Parent comment is invalid", HttpStatus.BAD_REQUEST),
     LIKE_NOT_FOUND(1920, "Like was not found", HttpStatus.NOT_FOUND),
     ALREADY_LIKED(1921, "Already liked", HttpStatus.BAD_REQUEST),
-    INVALID_LIKE_REQUEST(1922, "Like request is invalid", HttpStatus.BAD_REQUEST);
+    INVALID_LIKE_REQUEST(1922, "Like request is invalid", HttpStatus.BAD_REQUEST),
+    CONVERSATION_NOT_FOUND(2001, "Conversation was not found", HttpStatus.NOT_FOUND),
+    MESSAGE_NOT_FOUND(2002, "Message was not found", HttpStatus.NOT_FOUND),
+    INVALID_CONVERSATION_TYPE(2003, "Conversation type is invalid for this operation", HttpStatus.BAD_REQUEST),
+    PARTICIPANT_ALREADY_EXISTS(2004, "Participant already exists in this conversation", HttpStatus.BAD_REQUEST),
+    DUPLICATE_PARTICIPANT_IDS(2005, "Duplicate participant ids", HttpStatus.BAD_REQUEST),
+    INVALID_TOKEN(2006, "Token is invalid", HttpStatus.UNAUTHORIZED),
+    TOKEN_EXPIRED(2007, "Token has expired", HttpStatus.UNAUTHORIZED),
+    TOKEN_MISSING_EXPIRATION(2008, "Token is missing expiration", HttpStatus.UNAUTHORIZED),
+    USER_ID_REQUIRED(2009, "User id is required", HttpStatus.BAD_REQUEST);
 
     private final int code;
     private final String message;
