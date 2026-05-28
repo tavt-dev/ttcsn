@@ -16,7 +16,9 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/api/v1/profile/users")
@@ -58,6 +60,20 @@ public class ProfileController {
     public ApiResponse<List<ProfileResponse>> search(@RequestBody SearchUserRequest request) {
         return ApiResponse.<List<ProfileResponse>>builder()
                 .result(profileService.search(request))
+                .build();
+    }
+
+    @PutMapping("/avatar")
+    public ApiResponse<ProfileResponse> updateAvatar(@RequestParam("file") MultipartFile file) {
+        return ApiResponse.<ProfileResponse>builder()
+                .result(profileService.updateAvatar(file))
+                .build();
+    }
+
+    @PutMapping("/background")
+    public ApiResponse<ProfileResponse> updateBackgroundImage(@RequestParam("file") MultipartFile file) {
+        return ApiResponse.<ProfileResponse>builder()
+                .result(profileService.updateBackgroundImage(file))
                 .build();
     }
 }

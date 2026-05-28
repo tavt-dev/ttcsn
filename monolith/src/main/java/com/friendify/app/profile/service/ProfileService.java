@@ -1,7 +1,9 @@
 package com.friendify.app.profile.service;
 
+import java.io.IOException;
 import java.util.List;
 
+import com.friendify.app.file.port.FileUploadPort;
 import com.friendify.app.profile.dto.request.ProfileCreationRequest;
 import com.friendify.app.profile.dto.request.SearchUserRequest;
 import com.friendify.app.profile.dto.request.UpdateProfileRequest;
@@ -13,12 +15,14 @@ import com.friendify.app.profile.port.ProfileQueryPort;
 import com.friendify.app.profile.repository.ProfileRepository;
 import com.friendify.app.shared.exception.AppException;
 import com.friendify.app.shared.exception.ErrorCode;
+import com.friendify.app.shared.media.ImageType;
 import com.friendify.app.shared.security.CurrentUserProvider;
 import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
 import lombok.experimental.FieldDefaults;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 @Service
 @RequiredArgsConstructor
@@ -28,6 +32,7 @@ public class ProfileService implements ProfileCreationPort, ProfileQueryPort {
     ProfileRepository profileRepository;
     ProfileMapper profileMapper;
     CurrentUserProvider currentUserProvider;
+    FileUploadPort fileUploadPort;
 
     @Override
     @Transactional
@@ -71,6 +76,36 @@ public class ProfileService implements ProfileCreationPort, ProfileQueryPort {
         Profile profile = findByUserId(currentUserProvider.getCurrentUserId());
         profileMapper.update(profile, request);
         return profileMapper.toProfileResponse(profileRepository.save(profile));
+    }
+
+    @Transactional
+    public ProfileResponse updateAvatar(MultipartFile file) {
+        String userId = currentUserProvider.getCurrentUserId();
+        Profile profile = findByUserId(userId);
+        try {
+            var uploadResponse = fileUploadPort.uploadImage(file, ImageType.AVATAR, userId, null);
+            profile.setAvatar(uploadResponse.getSecureUrl());
+            return profileMapper.toProfileResponse(profileRepository.save(profile));
+        } catch (AppException exception) {
+            throw exception;
+        } catch (IOException exception) {
+            throw new AppException(ErrorCode.CLOUDINARY_UPLOAD_FAILED);
+        }
+    }
+
+    @Transactional
+    public ProfileResponse updateBackgroundImage(MultipartFile file) {
+        String userId = currentUserProvider.getCurrentUserId();
+        Profile profile = findByUserId(userId);
+        try {
+            var uploadResponse = fileUploadPort.uploadImage(file, ImageType.BACKGROUND_IMAGE, userId, null);
+            profile.setBackgroundImage(uploadResponse.getSecureUrl());
+            return profileMapper.toProfileResponse(profileRepository.save(profile));
+        } catch (AppException exception) {
+            throw exception;
+        } catch (IOException exception) {
+            throw new AppException(ErrorCode.CLOUDINARY_UPLOAD_FAILED);
+        }
     }
 
     @Override

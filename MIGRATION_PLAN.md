@@ -384,7 +384,7 @@ Needs manual review: `WebSocketConfig` allows all origins with `setAllowedOrigin
 | `chat-service` | same | `ChatMessage` | `chat_message` | indexed `conversationId`, indexed `createdDate`, embedded sender `ParticipantInfo` |
 | `chat-service` | same | `ReadReceipt` | `read_receipt` | indexed `messageId`, `conversationId`, `userId` |
 
-Needs manual review: the first monolith can keep MySQL and MongoDB side-by-side. Do not merge Mongo documents into MySQL in this migration pass.
+Needs manual review: the original plan allowed the first monolith to keep MySQL and MongoDB side-by-side. Step 4 was later adjusted by decision to store file image metadata in MySQL/JPA instead of MongoDB, and Step 6 was later adjusted by decision to store group data in MySQL/JPA instead of MongoDB. Remaining Mongo-backed modules (`post`, `notification`, `chat`) still need an explicit storage decision before migration.
 
 ## 5. Inter-Service Communication And Integrations
 
@@ -871,23 +871,273 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
      - Verification: `cd monolith && mvn test` passed with `BUILD SUCCESS`;
        `Tests run: 16, Failures: 0, Errors: 0, Skipped: 0`.
 
-4. [ ] Migrate `file` and remove image-upload Kafka request/reply.
+4. [x] DONE: Migrate `file` and remove image-upload Kafka request/reply.
    - Move Cloudinary config, `Image`, `ImageVersions`, `ImageRepository`, `ImageService`, `CloudMediaController`.
    - Expose direct upload port for profile/post/group.
    - Rewire migrated profile avatar/background endpoints from the temporary upload boundary to the direct file upload port.
    - Checkpoint tests: image upload service with mocked Cloudinary; profile avatar/background direct call.
+   Completed details:
+   - Added file module packages under `monolith/src/main/java/com/friendify/app/file/`:
+     `controller`, `service`, `repository`, `entity`, `dto`, `config`, `mapper`, and `port`.
+   - Migrated file classes:
+     `ImageService`, `ImageRepository`, `Image`, `ImageVersions`,
+     `CloudinaryConfig`, `CloudMediaController`, `UploadResponse`,
+     `ImageResponse`, and `ImageMapper`.
+   - Adjusted file image metadata storage to MySQL/JPA for the monolith target:
+     `Image` is now a JPA `@Entity` mapped to table `file`,
+     `ImageVersions` is an `@Embeddable`, and `ImageRepository` extends
+     `JpaRepository`. This intentionally differs from the legacy `file-service`,
+     where `Image` was a MongoDB document.
+   - Added direct upload port:
+     `monolith/src/main/java/com/friendify/app/file/port/FileUploadPort.java`.
+     Methods:
+     `uploadImage(MultipartFile file, ImageType imageType, String ownerId, String postId)`
+     and
+     `uploadImages(List<MultipartFile> files, ImageType imageType, String ownerId, String postId)`.
+     Both return file-module `UploadResponse` contracts to avoid duplicating response
+     mapping in profile/post/group callers.
+   - `ImageService` implements `FileUploadPort` directly. It still supports the JSON
+     `ImageUploadEvent -> ImageUploadedEvent` API for compatibility, but no Kafka
+     listener, `KafkaTemplate`, `ImageTopics`, or `spring-kafka` dependency was added.
+   - Preserved file endpoints directly in the monolith:
+     `POST /api/v1/file/images/upload`,
+     `POST /api/v1/file/images/upload-form-data`,
+     `POST /api/v1/file/images/upload-multiple-form-data`.
+   - Rewired profile media endpoints:
+     `PUT /api/v1/profile/users/avatar` and
+     `PUT /api/v1/profile/users/background`.
+     `ProfileService` now calls `FileUploadPort` directly with `ImageType.AVATAR`
+     and `ImageType.BACKGROUND_IMAGE`; it does not call file through HTTP and does
+     not use Kafka request/reply.
+   - Added configuration properties:
+     `spring.servlet.multipart.max-file-size`,
+     `spring.servlet.multipart.max-request-size`,
+     `cloudinary.cloud-name`,
+     `cloudinary.api-key`,
+     `cloudinary.api-secret`.
+     `.env` / `.env.example` now include multipart limits and `CLOUDINARY_*`
+     placeholders. Cloudinary config fails fast at startup with a clear error if
+     required Cloudinary settings are missing.
+   - Updated `monolith/pom.xml` with only required dependencies:
+     `com.cloudinary:cloudinary-http44`. The existing JPA/MySQL dependencies are
+     reused for file metadata. No MongoDB, Kafka, Redis, Feign, gateway, or
+     config-server dependency was added.
+   - Added file/profile tests:
+     `CloudinaryConfigTests` verifies missing Cloudinary config fails clearly;
+     `FileUploadPortBeanTests` verifies the port bean exists;
+     `ImageServiceTests` verifies unsupported content types fail before upload;
+     `ProfileServiceTests` verifies avatar/background use `FileUploadPort`.
+   - Post/group image upload remains deferred:
+     post image upload will be wired to `FileUploadPort` in Step 8;
+     group avatar/cover upload will be wired to `FileUploadPort` in Step 6.
+   - Needs manual review: tests do not perform a real Cloudinary upload. Production/local
+     runtime must set real `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and
+     `CLOUDINARY_API_SECRET`. Because file metadata was changed from MongoDB to
+     MySQL, production migration must include a data migration for existing
+     `file-service.file` documents if old uploaded-image metadata must be preserved.
+   - Verification: `cd monolith && mvn test` passed with `BUILD SUCCESS`;
+     `Tests run: 21, Failures: 0, Errors: 0, Skipped: 0`.
 
-5. [ ] Migrate `social`.
+5. [x] DONE: Migrate `social`.
    - Move friendship/follow/block JPA entities/repositories/services/controllers.
    - Replace profile Feign calls with profile query port.
    - Remove unused Kafka config/dependency for this module.
    - Checkpoint tests: block/friend/follow queries used by post feed.
+   Completed details:
+   - Added social module packages under
+     `monolith/src/main/java/com/friendify/app/social/`:
+     `controller`, `service`, `repository`, `entity`, `dto`, `mapper`,
+     `enums`, and `port`.
+   - Migrated social JPA entities and enum:
+     `Friendship`, `Follow`, `UserBlock`, and `FriendshipStatus`.
+     Existing table names/constraints from `social-service` were preserved:
+     `friendships`, `follows`, and `user_blocks`.
+   - Migrated repositories:
+     `FriendshipRepository`, `FollowRepository`, and `UserBlockRepository`.
+   - Migrated response DTOs and mappers:
+     `FriendshipResponse`, `FollowResponse`, `UserBlockResponse`,
+     `FriendshipStatusResponse`, `SocialCountsResponse`,
+     `UserSocialInfoResponse`, `FriendshipMapper`, `FollowMapper`,
+     and `UserBlockMapper`.
+   - Migrated services:
+     `FriendshipService`, `FollowService`, and `UserBlockService`.
+     `FriendshipService` now uses
+     `com.friendify.app.profile.port.ProfileQueryPort` directly for profile
+     search and profile lookup. No `ProfileClient`, Feign, WebClient,
+     RestTemplate, or internal HTTP call was added.
+   - Added direct social port for later post/feed migration:
+     `monolith/src/main/java/com/friendify/app/social/port/SocialGraphQueryPort.java`.
+     Implemented methods:
+     `getFriendIds(currentUserId)`,
+     `getFollowingIds(currentUserId)`,
+     `getBlockedUserIds(currentUserId)`, and
+     `isBlockedBetween(userId1, userId2)`.
+     `UserBlockService` implements this port.
+   - Preserved public social endpoints directly in the monolith:
+     `POST /api/v1/social/friendships/{friendId}`,
+     `POST /api/v1/social/friendships/{friendId}/accept`,
+     `POST /api/v1/social/friendships/{friendId}/reject`,
+     `DELETE /api/v1/social/friendships/{friendId}`,
+     `GET /api/v1/social/friendships/friends`,
+     `GET /api/v1/social/friendships/sent-requests`,
+     `GET /api/v1/social/friendships/received-requests`,
+     `GET /api/v1/social/friendships/search`,
+     `GET /api/v1/social/friendships/status/{friendId}`,
+     `GET /api/v1/social/friendships/mutual/{friendId}`,
+     `GET /api/v1/social/friendships/suggested`,
+     `GET /api/v1/social/friendships/pending-requests/count`,
+     `DELETE /api/v1/social/friendships/{friendId}/cancel`,
+     `GET /api/v1/social/friendships/sent-requests/count`,
+     `POST /api/v1/social/friendships/batch-status`,
+     `GET /api/v1/social/friendships/counts`,
+     `POST /api/v1/social/follows/{followingId}`,
+     `DELETE /api/v1/social/follows/{followingId}`,
+     `GET /api/v1/social/follows/following/{userId}`,
+     `GET /api/v1/social/follows/followers/{userId}`,
+     `GET /api/v1/social/follows/info/{userId}`,
+     `POST /api/v1/social/blocks/{blockedId}`,
+     `DELETE /api/v1/social/blocks/{blockedId}`,
+     `GET /api/v1/social/blocks`,
+     and `GET /api/v1/social/blocks/check/{blockedId}`.
+   - Preserved temporary internal compatibility endpoints:
+     `GET /internal/friend-ids`,
+     `GET /internal/following-ids`,
+     and `GET /internal/blocks/ids`.
+     Later monolith modules should use `SocialGraphQueryPort` instead of
+     these internal endpoints.
+   - Added social error codes to shared exception handling:
+     `INVALID_KEYWORD`, `FOLLOW_ALREADY_EXISTS`, `FOLLOW_NOT_FOUND`,
+     `CANNOT_FOLLOW_SELF`, `FRIENDSHIP_ALREADY_EXISTS`,
+     `FRIENDSHIP_NOT_FOUND`, `CANNOT_FRIEND_SELF`,
+     `FRIEND_REQUEST_ALREADY_SENT`, `FRIEND_REQUEST_NOT_PENDING`,
+     `USER_ALREADY_BLOCKED`, `USER_NOT_BLOCKED`, and `CANNOT_BLOCK_SELF`.
+   - No dependency changes were required. Existing JPA, validation, MySQL,
+     Lombok, and MapStruct dependencies were reused. No Kafka, Redis, Feign,
+     gateway, config-server, or social-service Kafka config was added.
+   - Added tests:
+     `monolith/src/test/java/com/friendify/app/social/port/SocialGraphQueryPortBeanTests.java`
+     verifies the direct social query port bean exists;
+     `monolith/src/test/java/com/friendify/app/social/service/FriendshipServiceTests.java`
+     verifies friend search uses `ProfileQueryPort` and filters blocked/current
+     users, and verifies self-friend requests fail before repository writes.
+   - Needs manual review: legacy `social-service` used its own MySQL schema
+     (`social_service`). The monolith currently uses one datasource, so
+     production must decide whether to migrate these tables into the monolith
+     schema or point the monolith datasource at an existing combined schema.
+   - Verification: `cd monolith && mvn test` passed with `BUILD SUCCESS`;
+     `Tests run: 24, Failures: 0, Errors: 0, Skipped: 0`.
 
-6. [ ] Migrate `group`.
-   - Move group Mongo documents/repositories/services/controllers.
+6. [x] DONE: Migrate `group`.
+   - Move group persistence/repositories/services/controllers into MySQL/JPA for the monolith.
    - Replace profile Feign with profile query port.
    - Replace group avatar/cover Kafka upload with direct file upload port.
    - Checkpoint tests: can-view/can-post checks; join request workflows.
+   Completed details:
+   - Added group module packages under
+     `monolith/src/main/java/com/friendify/app/group/`:
+     `controller`, `service`, `repository`, `entity`, `dto`, `mapper`,
+     `enums`, and `port`.
+   - Migrated group persistence as MySQL/JPA in the monolith per the explicit
+     MySQL-only decision for this migration slice. This intentionally differs
+     from the legacy `group-service`, where `Group`, `GroupMember`, and
+     `JoinRequest` were Mongo documents.
+   - Added JPA entities:
+     `Group`, `GroupMember`, and `JoinRequest`.
+     Table mappings:
+     quoted table ``group`` for `Group`,
+     `group_member` for `GroupMember`,
+     and `join_request` for `JoinRequest`.
+     `GroupMember` and `JoinRequest` preserve unique `(group_id, user_id)`
+     constraints for membership/request identity.
+   - Added repositories:
+     `GroupRepository`, `GroupMemberRepository`, and `JoinRequestRepository`,
+     all extending JPA repositories. No Mongo repository or Mongo dependency was
+     added.
+   - Added enums:
+     `GroupPrivacy`, `MemberRole`, and `RequestStatus`.
+   - Added request/response DTOs:
+     `CreateGroupRequest`, `UpdateGroupRequest`, `JoinGroupRequest`,
+     `ProcessJoinRequest`, `UpdateMemberRoleRequest`, `GroupResponse`,
+     `GroupMemberResponse`, `JoinRequestResponse`, and `MemberRoleResponse`.
+   - Added mappers and formatter:
+     `GroupMapper`, `GroupMemberMapper`, `JoinRequestMapper`, and
+     `DateTimeFormatter`.
+   - Migrated `GroupService` behavior for group CRUD, membership management,
+     join/leave/request workflows, group search/listing, member listing,
+     and group access checks.
+   - `GroupService` now injects
+     `com.friendify.app.profile.port.ProfileQueryPort` for owner/member/join
+     request profile display data. It does not use `ProfileClient`, Feign,
+     WebClient, RestTemplate, or internal HTTP calls.
+   - Group avatar/cover upload now injects
+     `com.friendify.app.file.port.FileUploadPort` directly and calls it with
+     `ImageType.GROUP_AVATAR` and `ImageType.GROUP_COVER`.
+     `ImageUploadKafkaService`, `@KafkaListener`, `KafkaTemplate`, and
+     `ImageTopics` were not migrated.
+   - Added direct group access port for later post migration:
+     `monolith/src/main/java/com/friendify/app/group/port/GroupAccessPort.java`.
+     Implemented methods:
+     `exists(groupId)`,
+     `canPost(groupId, userId)`,
+     `canView(groupId, userId)`, and
+     `getGroup(groupId)`.
+     `GroupService` implements this port.
+   - Preserved public group endpoints directly in the monolith:
+     `POST /api/v1/group/groups`,
+     `PUT /api/v1/group/groups/{groupId}`,
+     `DELETE /api/v1/group/groups/{groupId}`,
+     `GET /api/v1/group/groups`,
+     `GET /api/v1/group/groups/{groupId}`,
+     `PUT /api/v1/group/groups/{groupId}/avatar`,
+     `PUT /api/v1/group/groups/{groupId}/cover`,
+     `POST /api/v1/group/groups/{groupId}/members/{userId}`,
+     `DELETE /api/v1/group/groups/{groupId}/members/{userId}`,
+     `PUT /api/v1/group/groups/{groupId}/members/{userId}/role`,
+     `GET /api/v1/group/groups/{groupId}/members`,
+     `POST /api/v1/group/groups/{groupId}/join`,
+     `POST /api/v1/group/groups/{groupId}/leave`,
+     `POST /api/v1/group/groups/{groupId}/join-requests/{requestId}/process`,
+     `GET /api/v1/group/groups/{groupId}/join-requests`,
+     `DELETE /api/v1/group/groups/{groupId}/join-requests/{requestId}`,
+     `GET /api/v1/group/groups/my-join-requests`,
+     `GET /api/v1/group/groups/my-groups`,
+     `GET /api/v1/group/groups/joined-groups`,
+     and `GET /api/v1/group/groups/search`.
+   - Preserved temporary internal compatibility endpoints:
+     `GET /internal/groups/{groupId}/exists`,
+     `GET /internal/groups/{groupId}`,
+     `GET /internal/groups/{groupId}/can-post`,
+     `GET /internal/groups/{groupId}/can-view`,
+     and `GET /internal/groups/{groupId}/can-view/{userId}`.
+     Later monolith modules should use `GroupAccessPort` instead of calling
+     these internal endpoints.
+   - Added group error codes to shared exception handling:
+     `GROUP_NOT_FOUND`, `GROUP_ALREADY_EXISTS`, `GROUP_NOT_OWNER`,
+     `GROUP_NAME_REQUIRED`, `MEMBER_NOT_FOUND`, `MEMBER_ALREADY_EXISTS`,
+     `MEMBER_CANNOT_REMOVE_OWNER`, `INVALID_ROLE`,
+     `CANNOT_CHANGE_OWNER_ROLE`, `JOIN_REQUEST_NOT_FOUND`,
+     `JOIN_REQUEST_ALREADY_EXISTS`, `ALREADY_MEMBER`,
+     `INSUFFICIENT_PERMISSION`, `CANNOT_JOIN_GROUP`, and
+     `POSTING_NOT_ALLOWED`.
+   - No dependency changes were required for this step. Existing JPA,
+     validation, MySQL, Lombok, MapStruct, web, and file upload dependencies
+     were reused. No MongoDB, Kafka, Redis, Feign, gateway, or config-server
+     dependency was added.
+   - Added tests:
+     `monolith/src/test/java/com/friendify/app/group/port/GroupAccessPortBeanTests.java`
+     verifies the direct group access port bean exists;
+     `monolith/src/test/java/com/friendify/app/group/service/GroupServiceTests.java`
+     verifies `GroupService` implements `GroupAccessPort`, group avatar upload
+     uses `FileUploadPort`, and `canPost(groupId, userId)` allows moderators
+     when only admins/moderators can post.
+   - Needs manual review: because this step intentionally maps legacy Mongo
+     group documents to MySQL/JPA, production must include a data migration for
+     existing `group-service` collections (`group`, `group_member`,
+     `join_request`) if old group data must be preserved. The quoted MySQL
+     table ``group`` should also be reviewed before production because `GROUP`
+     is a SQL keyword.
+   - Verification: `cd monolith && mvn test` passed with `BUILD SUCCESS`;
+     `Tests run: 28, Failures: 0, Errors: 0, Skipped: 0`.
 
 7. [ ] Migrate `interaction`.
    - Move comment/like JPA entities/repositories/services/controllers.
@@ -939,5 +1189,5 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
 - OAuth2 redirect: `identity-service` uses `app.oauth2.authorizedRedirectUri` and Google OAuth config. Verify callback paths after monolith route changes.
 - OAuth2 cookie security: OAuth2 success now uses an HttpOnly access-token cookie instead of a query token. Production must run HTTPS with `FRIENDIFY_OAUTH2_COOKIE_SECURE=true`, verify CORS credentials behavior with the frontend, and review CSRF protection before relying on cookie-authenticated state-changing APIs.
 - Duplicate DTOs: `ProfileResponse`, `UserProfileResponse`, `ApiResponse`, `PageResponse`, and exception classes are duplicated with possibly different fields. Compare fields before unifying.
-- Mongo collection names: collections use singular names such as `post`, `group`, `file`, `conversation`; preserve them during first migration.
+- Mongo collection names: remaining Mongo-backed modules use singular names such as `post` and `conversation`; preserve them during first migration unless a later explicit MySQL-only decision is made. The legacy `file` collection is now a MySQL `file` table, and the legacy group collections (`group`, `group_member`, `join_request`) are now MySQL/JPA tables in the monolith. Both need data migration plans if existing metadata/group data matters.
 - Tests are thin: current tests are mostly `contextLoads` classes. Add focused tests before deleting or disabling old services.
