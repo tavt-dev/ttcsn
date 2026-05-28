@@ -60,7 +60,14 @@ public enum ErrorCode {
     ALREADY_MEMBER(1812, "User is already a group member", HttpStatus.BAD_REQUEST),
     INSUFFICIENT_PERMISSION(1813, "Insufficient permission", HttpStatus.FORBIDDEN),
     CANNOT_JOIN_GROUP(1814, "Cannot join this group", HttpStatus.BAD_REQUEST),
-    POSTING_NOT_ALLOWED(1815, "Posting is not allowed in this group", HttpStatus.FORBIDDEN);
+    POSTING_NOT_ALLOWED(1815, "Posting is not allowed in this group", HttpStatus.FORBIDDEN),
+    POST_NOT_FOUND(1901, "Post was not found", HttpStatus.NOT_FOUND),
+    POST_MODULE_NOT_MIGRATED(1902, "Post module is not migrated into the monolith yet", HttpStatus.SERVICE_UNAVAILABLE),
+    COMMENT_NOT_FOUND(1910, "Comment was not found", HttpStatus.NOT_FOUND),
+    INVALID_PARENT_COMMENT(1911, "Parent comment is invalid", HttpStatus.BAD_REQUEST),
+    LIKE_NOT_FOUND(1920, "Like was not found", HttpStatus.NOT_FOUND),
+    ALREADY_LIKED(1921, "Already liked", HttpStatus.BAD_REQUEST),
+    INVALID_LIKE_REQUEST(1922, "Like request is invalid", HttpStatus.BAD_REQUEST);
 
     private final int code;
     private final String message;

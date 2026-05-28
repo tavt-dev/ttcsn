@@ -1139,12 +1139,103 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
    - Verification: `cd monolith && mvn test` passed with `BUILD SUCCESS`;
      `Tests run: 28, Failures: 0, Errors: 0, Skipped: 0`.
 
-7. [ ] Migrate `interaction`.
+7. [x] DONE: Migrate `interaction`.
    - Move comment/like JPA entities/repositories/services/controllers.
    - Replace post/profile Feign clients with ports.
    - Remove `like.events`/`comment.events` Kafka publishing after external consumer review.
    - Keep cleanup port for post deletion.
    - Checkpoint tests: comment/reply/like flows; count/is-liked; cleanup by post id.
+   Completed details:
+   - Added interaction module packages under
+     `monolith/src/main/java/com/friendify/app/interaction/`:
+     `controller`, `service`, `repository`, `entity`, `dto`, `mapper`, and
+     `port`.
+   - Migrated JPA entities:
+     `Like` mapped to table `likes` and
+     `Comment` mapped to table `comments`.
+     Entity names were set to `InteractionLike` and `InteractionComment` for
+     JPQL safety while preserving table names.
+   - Migrated repositories:
+     `LikeRepository` and `CommentRepository`.
+     Added cleanup support methods for comment ids by post and deleting likes
+     by comment id list.
+   - Migrated request/response DTOs:
+     `CreateLikeRequest`, `CreateCommentRequest`, `UpdateCommentRequest`,
+     `LikeResponse`, and `CommentResponse`.
+   - Migrated mappers:
+     `LikeMapper` and `CommentMapper`.
+   - Migrated services:
+     `LikeService` and `CommentService`.
+     They preserve like/unlike, comment/reply, update/delete, counters,
+     reply loading, and profile enrichment behavior.
+   - Replaced profile Feign usage with
+     `com.friendify.app.profile.port.ProfileQueryPort`.
+     `LikeService` and `CommentService` use the port for profile display data
+     and do not use `ProfileClient`, Feign, WebClient, RestTemplate, or
+     internal HTTP calls.
+   - Added `com.friendify.app.interaction.port.PostQueryPort` for post
+     existence checks. Because the post module is not migrated yet, the current
+     implementation is
+     `UnavailablePostQueryAdapter`, which fails fast with
+     `POST_MODULE_NOT_MIGRATED`. This is intentionally not a fake success and
+     must be replaced by the real post-module adapter in Step 8.
+   - Added interaction ports for later post migration:
+     `InteractionQueryPort` with
+     `countLikesByPostId(postId)`,
+     `countCommentsByPostId(postId)`, and
+     `isLikedByCurrentUser(postId, userId)`;
+     `InteractionCleanupPort` with
+     `deleteByPostId(postId)`.
+     `InteractionPortService` implements both ports.
+   - Post deletion cleanup is now an in-process port:
+     `InteractionCleanupPort.deleteByPostId(postId)` deletes likes attached
+     directly to the post, comments for the post, and likes attached to those
+     comments. Step 8 post delete should call this port directly.
+   - Preserved public interaction endpoints directly in the monolith:
+     `POST /api/v1/interaction/likes`,
+     `DELETE /api/v1/interaction/likes/{id}`,
+     `DELETE /api/v1/interaction/likes/post/{postId}`,
+     `DELETE /api/v1/interaction/likes/comment/{commentId}`,
+     `GET /api/v1/interaction/likes/post/{postId}`,
+     `POST /api/v1/interaction/comments`,
+     `GET /api/v1/interaction/comments/post/{postId}`,
+     `GET /api/v1/interaction/comments/{id}`,
+     `GET /api/v1/interaction/comments/{id}/replies`,
+     `PUT /api/v1/interaction/comments/{id}`,
+     and `DELETE /api/v1/interaction/comments/{id}`.
+   - Preserved temporary internal compatibility endpoints:
+     `GET /internal/likes/post/{postId}/count`,
+     `GET /internal/likes/post/{postId}/is-liked`, and
+     `GET /internal/comments/post/{postId}/count`.
+     Later monolith modules should use `InteractionQueryPort` directly instead
+     of these internal endpoints.
+   - Kafka was avoided in the monolith path:
+     `PostEventListener`, `UserEventListener`, `KafkaTemplate`,
+     `@KafkaListener`, `LikeEvent` publishing to `like.events`, and
+     `CommentEvent` publishing to `comment.events` were not migrated.
+   - Added interaction error codes to shared exception handling:
+     `POST_NOT_FOUND`, `POST_MODULE_NOT_MIGRATED`, `COMMENT_NOT_FOUND`,
+     `INVALID_PARENT_COMMENT`, `LIKE_NOT_FOUND`, `ALREADY_LIKED`, and
+     `INVALID_LIKE_REQUEST`.
+   - No dependency changes were required. Existing JPA, validation, MySQL,
+     Lombok, MapStruct, web, and security dependencies were reused. No Kafka,
+     Redis, Feign, gateway, or config-server dependency was added.
+   - Added tests:
+     `InteractionPortBeanTests` verifies `InteractionQueryPort`,
+     `InteractionCleanupPort`, and `PostQueryPort` beans exist;
+     `UnavailablePostQueryAdapterTests` verifies the temporary post adapter
+     fails fast with `POST_MODULE_NOT_MIGRATED`;
+     `LikeServiceTests` verifies like response enrichment uses
+     `ProfileQueryPort`;
+     `InteractionPortServiceTests` verifies cleanup by post id deletes related
+     comments and likes.
+   - Needs manual review: interaction create-like/create-comment flows that
+     target posts will fail fast until Step 8 replaces `UnavailablePostQueryAdapter`
+     with the real post module adapter. Also confirm whether any external
+     consumers still depend on legacy `like.events`, `comment.events`,
+     `post.events`, or `user.events` before removing old Kafka topics/deployments.
+   - Verification: `cd monolith && mvn test` passed with `BUILD SUCCESS`;
+     `Tests run: 32, Failures: 0, Errors: 0, Skipped: 0`.
 
 8. [ ] Migrate `post`.
    - Move post Mongo documents/repositories/services/controllers.
@@ -1182,6 +1273,7 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
 - Internal endpoints: `/internal/**` endpoints are currently used by Feign clients. In monolith they should become ports, but keep temporary compatibility endpoints only if external clients still call them.
 - Data ownership: identity `User.id`, profile `Profile.userId`, social ids, post `userId`, group `ownerId/member.userId`, chat participant `userId`, and notification `userId` are string references without DB FKs. Cross-module consistency must be tested.
 - Cross-store workflows: post deletion touches MongoDB posts and MySQL interactions. Decide whether direct cleanup is same transaction, best-effort, or async/outbox.
+- Interaction post dependency: Step 7 intentionally uses `UnavailablePostQueryAdapter` until the post module is migrated. Post-targeted like/comment creation will fail fast with `POST_MODULE_NOT_MIGRATED` until Step 8 wires the real post adapter.
 - Kafka external dependencies: no consumers/producers were found for several topics in this repo, but external consumers may exist. Needs manual review before deleting Kafka topics or deployments.
 - File upload failure timing: Kafka request/reply currently waits up to 30 seconds. Direct Cloudinary calls fail immediately in the request path; preserve error mapping.
 - Notification reliability: Kafka currently decouples identity from Brevo email. Direct calls may make registration/password reset depend on Brevo availability unless async/outbox is used.
