@@ -384,7 +384,12 @@ Needs manual review: `WebSocketConfig` allows all origins with `setAllowedOrigin
 | `chat-service` | same | `ChatMessage` | `chat_message` | indexed `conversationId`, indexed `createdDate`, embedded sender `ParticipantInfo` |
 | `chat-service` | same | `ReadReceipt` | `read_receipt` | indexed `messageId`, `conversationId`, `userId` |
 
-Needs manual review: the original plan allowed the first monolith to keep MySQL and MongoDB side-by-side. Step 4 was later adjusted by decision to store file image metadata in MySQL/JPA instead of MongoDB, and Step 6 was later adjusted by decision to store group data in MySQL/JPA instead of MongoDB. Remaining Mongo-backed modules (`post`, `notification`, `chat`) still need an explicit storage decision before migration.
+Needs manual review: the original legacy services use MongoDB for post, group,
+file, notification, and chat. The current monolith target has been clarified as
+MySQL-only for migrated modules. Step 4, Step 6, and Step 8 now map file,
+group, and post data to MySQL/JPA. Future notification and chat steps should
+also map their legacy Mongo data to MySQL/JPA unless the user explicitly changes
+that target.
 
 ## 5. Inter-Service Communication And Integrations
 
@@ -483,8 +488,8 @@ Recommended module contents:
 - `social`: friendship/follow/block domain and social graph query ports.
 - `group`: group membership/access checks and group documents.
 - `interaction`: likes/comments and cleanup port.
-- `post`: post/feed/saved/shared post domain and Mongo repositories.
-- `notification`: notification documents, Brevo email client, email/notification application service.
+- `post`: post/feed/saved/shared post domain and JPA repositories.
+- `notification`: notification entity/repository, Brevo email client, email/notification application service.
 - `chat`: conversation/message/read receipt/WebSocket domain.
 - `shared`: `ApiResponse`, `PageResponse`, canonical exception base types, current-user helper, media contracts, notification event contract, shared DTOs.
 - `config`: security, OpenAPI, persistence, WebSocket, Cloudinary, external clients.
@@ -1174,11 +1179,8 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
      and do not use `ProfileClient`, Feign, WebClient, RestTemplate, or
      internal HTTP calls.
    - Added `com.friendify.app.interaction.port.PostQueryPort` for post
-     existence checks. Because the post module is not migrated yet, the current
-     implementation is
-     `UnavailablePostQueryAdapter`, which fails fast with
-     `POST_MODULE_NOT_MIGRATED`. This is intentionally not a fake success and
-     must be replaced by the real post-module adapter in Step 8.
+     existence checks. Step 8 replaced the temporary fail-fast adapter with
+     the real post-module implementation.
    - Added interaction ports for later post migration:
      `InteractionQueryPort` with
      `countLikesByPostId(postId)`,
@@ -1214,7 +1216,7 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
      `@KafkaListener`, `LikeEvent` publishing to `like.events`, and
      `CommentEvent` publishing to `comment.events` were not migrated.
    - Added interaction error codes to shared exception handling:
-     `POST_NOT_FOUND`, `POST_MODULE_NOT_MIGRATED`, `COMMENT_NOT_FOUND`,
+     `POST_NOT_FOUND`, `COMMENT_NOT_FOUND`,
      `INVALID_PARENT_COMMENT`, `LIKE_NOT_FOUND`, `ALREADY_LIKED`, and
      `INVALID_LIKE_REQUEST`.
    - No dependency changes were required. Existing JPA, validation, MySQL,
@@ -1223,35 +1225,116 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
    - Added tests:
      `InteractionPortBeanTests` verifies `InteractionQueryPort`,
      `InteractionCleanupPort`, and `PostQueryPort` beans exist;
-     `UnavailablePostQueryAdapterTests` verifies the temporary post adapter
-     fails fast with `POST_MODULE_NOT_MIGRATED`;
      `LikeServiceTests` verifies like response enrichment uses
      `ProfileQueryPort`;
      `InteractionPortServiceTests` verifies cleanup by post id deletes related
      comments and likes.
-   - Needs manual review: interaction create-like/create-comment flows that
-     target posts will fail fast until Step 8 replaces `UnavailablePostQueryAdapter`
-     with the real post module adapter. Also confirm whether any external
-     consumers still depend on legacy `like.events`, `comment.events`,
-     `post.events`, or `user.events` before removing old Kafka topics/deployments.
+   - Needs manual review: confirm whether any external consumers still depend
+     on legacy `like.events`, `comment.events`, `post.events`, or `user.events`
+     before removing old Kafka topics/deployments.
    - Verification: `cd monolith && mvn test` passed with `BUILD SUCCESS`;
      `Tests run: 32, Failures: 0, Errors: 0, Skipped: 0`.
 
-8. [ ] Migrate `post`.
-   - Move post Mongo documents/repositories/services/controllers.
+8. [x] DONE: Migrate `post`.
+   - Move post persistence/repositories/services/controllers.
    - Replace profile/social/interaction/group Feign with direct ports.
    - Replace post image upload Kafka with file upload port.
    - Wire post delete to interaction cleanup.
    - Checkpoint tests: feed visibility; group post permissions; post delete cleans comments/likes.
+   Completed details:
+   - Added post module packages under
+     `monolith/src/main/java/com/friendify/app/post/`:
+     `controller`, `service`, `repository`, `entity`, `dto`, `mapper`, and
+     `enums`.
+   - Migrated post persistence to MySQL/JPA per current target decision:
+     `Post` mapped to table `post`,
+     `SavedPost` mapped to table `saved_posts`, and
+     `SharedPost` mapped to table `shared_posts`.
+     Post image URLs are stored in `post_image_urls`.
+   - Migrated repositories:
+     `PostRepository`, `SavedPostRepository`, and `SharedPostRepository`.
+   - Migrated post contracts:
+     `PostRequest`, `UpdatePostRequest`, `PostResponse`, and `PrivacyType`.
+   - Migrated `PostMapper`, `PostService`, and the post-local
+     `DateTimeFormatter` bean as `postDateTimeFormatter`.
+   - Replaced internal Feign/HTTP dependencies with direct ports:
+     `ProfileQueryPort` for author/profile data,
+     `SocialGraphQueryPort` for friends/following/blocked visibility,
+     `InteractionQueryPort` for like/comment counts and current-user liked
+     state, `InteractionCleanupPort` for post delete cleanup,
+     `GroupAccessPort` for group exists/can-post/can-view checks, and
+     `FileUploadPort` for multipart post image uploads.
+   - Replaced the Step 7 temporary `UnavailablePostQueryAdapter` with the real
+     post module implementation. `PostService` now implements
+     `com.friendify.app.interaction.port.PostQueryPort.exists(postId)`.
+     The temporary `POST_MODULE_NOT_MIGRATED` error code was removed because it
+     is no longer used.
+   - Post image upload no longer uses Kafka request/reply in the monolith path.
+     `PostService` calls `FileUploadPort.uploadImages(...)` directly with
+     `ImageType.POST_IMAGE`.
+   - Post deletion now calls `InteractionCleanupPort.deleteByPostId(postId)`
+     before deleting post, saved-post, and shared-post records. The chosen
+     behavior is fail-fast: if interaction cleanup fails, post deletion stops
+     instead of silently leaving orphaned comments/likes.
+   - Preserved public post endpoints directly in the monolith:
+     `POST /api/v1/post/create`,
+     `POST /api/v1/post/json`,
+     `GET /api/v1/post/my-posts`,
+     `POST /api/v1/post/save/{postId}`,
+     `DELETE /api/v1/post/unsave/{postId}`,
+     `GET /api/v1/post/saved-posts`,
+     `POST /api/v1/post/share/{postId}`,
+     `GET /api/v1/post/shared-posts/{postId}`,
+     `GET /api/v1/post/share-count/{postId}`,
+     `GET /api/v1/post/is-saved/{postId}`,
+     `GET /api/v1/post/user/{userId}`,
+     `GET /api/v1/post/my-shared-posts`,
+     `GET /api/v1/post/saved-count`,
+     `GET /api/v1/post/search`,
+     `GET /api/v1/post/{postId}`,
+     `PUT /api/v1/post/{postId}`,
+     `PUT /api/v1/post/{postId}/json`,
+     `DELETE /api/v1/post/{postId}`,
+     `GET /api/v1/post/public`,
+     `GET /api/v1/post/feed`, and
+     `GET /api/v1/post/group/{groupId}`.
+   - Preserved temporary internal compatibility endpoint:
+     `GET /internal/posts/{postId}/exists`.
+     Inside the monolith, interaction uses `PostQueryPort` directly instead of
+     calling this endpoint.
+   - Added post error codes to shared exception handling:
+     `POST_EMPTY`, `POST_ALREADY_SAVED`, `POST_NOT_SAVED`,
+     `POST_NOT_OWNER`, `SHARED_POST_NOT_FOUND`, and
+     `POST_IMAGE_UPLOAD_FAILED`.
+   - Removed MongoDB from the monolith path after the user clarified the target
+     should use MySQL only. `spring-boot-starter-data-mongodb`,
+     `spring.data.mongodb.uri`, and `FRIENDIFY_MONGODB_URI` were removed.
+     Existing JPA/MySQL dependencies are used. No Kafka, Redis, Feign, gateway,
+     or config-server dependency was added.
+   - Added tests:
+     `monolith/src/test/java/com/friendify/app/post/port/PostQueryPortBeanTests.java`
+     verifies the interaction `PostQueryPort` is backed by `PostService`;
+     `monolith/src/test/java/com/friendify/app/post/service/PostServiceTests.java`
+     verifies `PostService` implements `PostQueryPort`, post multipart create
+     uses `FileUploadPort`, feed visibility uses `SocialGraphQueryPort`, and
+     delete calls `InteractionCleanupPort`.
+   - Verification: `cd monolith && mvn test` passed with `BUILD SUCCESS`;
+     `Tests run: 36, Failures: 0, Errors: 0, Skipped: 0`.
+   - Needs manual review: legacy `post-service` data currently lives in MongoDB
+     in the microservice architecture. Production needs an explicit data
+     migration from Mongo collections `post`, `saved_posts`, and `shared_posts`
+     into the MySQL tables above before cutting traffic to the monolith.
+     Post deletion now stays inside MySQL/JPA for post records and calls the
+     MySQL-backed interaction cleanup port first.
 
 9. [ ] Migrate `notification`.
-   - Move notification Mongo document/repository/service/controllers and Brevo client.
+   - Move notification persistence to MySQL/JPA, then migrate repository/service/controllers and Brevo client.
    - Replace `notification-delivery` Kafka listener with direct application service.
    - Decide sync vs async email delivery.
    - Checkpoint tests: email dispatch with mocked Brevo; notification persistence/read/unread count.
 
 10. [ ] Migrate `chat`.
-   - Move chat Mongo documents/repositories/services/controllers and WebSocket config.
+   - Move chat persistence to MySQL/JPA, then migrate repositories/services/controllers and WebSocket config.
    - Replace profile Feign with profile query port.
    - Preserve REST and STOMP paths.
    - Checkpoint tests: WebSocket auth, conversation membership validation, unread count.
@@ -1272,8 +1355,15 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
 - Security duplication: every service has its own `SecurityConfig`, `CustomJwtDecoder`, and `JwtAuthenticationEntryPoint`. Consolidation can accidentally open or block endpoints.
 - Internal endpoints: `/internal/**` endpoints are currently used by Feign clients. In monolith they should become ports, but keep temporary compatibility endpoints only if external clients still call them.
 - Data ownership: identity `User.id`, profile `Profile.userId`, social ids, post `userId`, group `ownerId/member.userId`, chat participant `userId`, and notification `userId` are string references without DB FKs. Cross-module consistency must be tested.
-- Cross-store workflows: post deletion touches MongoDB posts and MySQL interactions. Decide whether direct cleanup is same transaction, best-effort, or async/outbox.
-- Interaction post dependency: Step 7 intentionally uses `UnavailablePostQueryAdapter` until the post module is migrated. Post-targeted like/comment creation will fail fast with `POST_MODULE_NOT_MIGRATED` until Step 8 wires the real post adapter.
+- Post data migration: legacy `post-service` stores `post`, `saved_posts`, and
+  `shared_posts` in MongoDB, but the monolith Step 8 implementation now maps
+  post data to MySQL/JPA tables. Needs manual review and a production data
+  migration before switching traffic.
+- Post delete consistency: Step 8 wires post deletion to
+  `InteractionCleanupPort.deleteByPostId(postId)` before deleting MySQL post
+  records. This preserves cleanup behavior and keeps the migrated path in
+  MySQL, but failure behavior is still fail-fast and should be reviewed before
+  production.
 - Kafka external dependencies: no consumers/producers were found for several topics in this repo, but external consumers may exist. Needs manual review before deleting Kafka topics or deployments.
 - File upload failure timing: Kafka request/reply currently waits up to 30 seconds. Direct Cloudinary calls fail immediately in the request path; preserve error mapping.
 - Notification reliability: Kafka currently decouples identity from Brevo email. Direct calls may make registration/password reset depend on Brevo availability unless async/outbox is used.
@@ -1281,5 +1371,10 @@ Each step should end with `cd monolith && mvn test` or `mvn verify` once the mon
 - OAuth2 redirect: `identity-service` uses `app.oauth2.authorizedRedirectUri` and Google OAuth config. Verify callback paths after monolith route changes.
 - OAuth2 cookie security: OAuth2 success now uses an HttpOnly access-token cookie instead of a query token. Production must run HTTPS with `FRIENDIFY_OAUTH2_COOKIE_SECURE=true`, verify CORS credentials behavior with the frontend, and review CSRF protection before relying on cookie-authenticated state-changing APIs.
 - Duplicate DTOs: `ProfileResponse`, `UserProfileResponse`, `ApiResponse`, `PageResponse`, and exception classes are duplicated with possibly different fields. Compare fields before unifying.
-- Mongo collection names: remaining Mongo-backed modules use singular names such as `post` and `conversation`; preserve them during first migration unless a later explicit MySQL-only decision is made. The legacy `file` collection is now a MySQL `file` table, and the legacy group collections (`group`, `group_member`, `join_request`) are now MySQL/JPA tables in the monolith. Both need data migration plans if existing metadata/group data matters.
+- Mongo collection names: the current target is MySQL for migrated modules.
+  Legacy Mongo collections already remapped to MySQL/JPA in the monolith include
+  `file`, `group`, `group_member`, `join_request`, `post`, `saved_posts`, and
+  `shared_posts`. Future notification and chat migrations should also use
+  MySQL/JPA under the current target. Each legacy collection needs a data
+  migration plan if existing data must be preserved.
 - Tests are thin: current tests are mostly `contextLoads` classes. Add focused tests before deleting or disabling old services.
